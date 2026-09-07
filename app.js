@@ -91,6 +91,8 @@ let state = {
   confirmDeleteId: null,
   showAddPlan: false,
   showAddTask: false,
+  showBackup: false,
+  storagePersisted: null,
   pulses: {},
   selectedDayKey: toKey(new Date()),
   reportPeriod: 'week',
@@ -101,8 +103,172 @@ let planDraft = {};
 let taskDraft = {};
 
 function safeParse(s, fallback){ try { return s ? JSON.parse(s) : fallback; } catch(e){ return fallback; } }
-function persistPlans(){ localStorage.setItem('reja-plans', JSON.stringify(state.plans)); }
-function persistTasks(){ localStorage.setItem('reja-daily-tasks', JSON.stringify(state.tasks)); }
+
+// ==================== Chidamli saqlash (durable storage) ====================
+// Uch qatlam: localStorage (tez) -> localStorage zaxira nusxa -> IndexedDB (chidamli)
+const DB_NAME = 'rejam-db', DB_STORE = 'kv';
+let __db = null;
+
+function idbOpen(){
+  return new Promise((res, rej) => {
+    if (__db) return res(__db);
+    if (!('indexedDB' in window)) return rej(new Error('indexedDB yo\'q'));
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE);
+    };
+    req.onsuccess = () => { __db = req.result; res(__db); };
+    req.onerror = () => rej(req.error);
+  });
+}
+function idbSet(key, val){
+  return idbOpen().then(db => new Promise((res, rej) => {
+    const tx = db.transaction(DB_STORE, 'readwrite');
+    tx.objectStore(DB_STORE).put(val, key);
+    tx.oncomplete = () => res(true);
+    tx.onerror = () => rej(tx.error);
+  }));
+}
+function idbGet(key){
+  return idbOpen().then(db => new Promise((res, rej) => {
+    const tx = db.transaction(DB_STORE, 'readonly');
+    const r = tx.objectStore(DB_STORE).get(key);
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  }));
+}
+
+function snapshot(){
+  return { v:1, savedAt: Date.now(), plans: state.plans, tasks: state.tasks };
+}
+
+// Har bir o'zgarishda hamma qatlamga yozamiz
+function mirror(){
+  const snap = snapshot();
+  try { localStorage.setItem('reja-backup', JSON.stringify(snap)); } catch(e){}
+  idbSet('snapshot', snap).catch(()=>{});
+}
+
+function persistPlans(){
+  try { localStorage.setItem('reja-plans', JSON.stringify(state.plans)); } catch(e){}
+  mirror();
+}
+function persistTasks(){
+  try { localStorage.setItem('reja-daily-tasks', JSON.stringify(state.tasks)); } catch(e){}
+  mirror();
+}
+
+// Brauzerdan "bu ma'lumotni o'chirma" deb so'raymiz
+async function requestPersistence(){
+  try {
+    if (navigator.storage && navigator.storage.persist) {
+      let ok = await navigator.storage.persisted();
+      if (!ok) ok = await navigator.storage.persist();
+      state.storagePersisted = !!ok;
+      return !!ok;
+    }
+  } catch(e){}
+  state.storagePersisted = null;
+  return null;
+}
+
+// Ishga tushganda: xotira tozalangan bo'lsa zaxiradan tiklaymiz
+async function bootstrapStorage(){
+  await requestPersistence();
+  let restored = false;
+  try {
+    const empty = state.plans.length === 0 && state.tasks.length === 0;
+    if (empty) {
+      let snap = null;
+      try { snap = await idbGet('snapshot'); } catch(e){}
+      if (!snap) snap = safeParse(localStorage.getItem('reja-backup'), null);
+      if (snap && ((snap.plans||[]).length || (snap.tasks||[]).length)) {
+        state.plans = Array.isArray(snap.plans) ? snap.plans : [];
+        state.tasks = Array.isArray(snap.tasks) ? snap.tasks : [];
+        try { localStorage.setItem('reja-plans', JSON.stringify(state.plans)); } catch(e){}
+        try { localStorage.setItem('reja-daily-tasks', JSON.stringify(state.tasks)); } catch(e){}
+        restored = true;
+      }
+    } else {
+      mirror();
+    }
+  } catch(e){}
+  render();
+  if (restored) toast("Ma'lumot zaxiradan tiklandi \u2713");
+}
+
+// ---------- Export / Import ----------
+function lastExportAt(){ return Number(localStorage.getItem('reja-last-export') || 0); }
+function markExported(){
+  try { localStorage.setItem('reja-last-export', String(Date.now())); } catch(e){}
+  state.showBackup && render();
+}
+function backupFileName(){ return 'rejam-zaxira-' + toKey(new Date()) + '.json'; }
+function backupText(){ return JSON.stringify(snapshot(), null, 2); }
+
+async function exportData(){
+  const text = backupText();
+  const fname = backupFileName();
+  const blob = new Blob([text], { type:'application/json' });
+  // iPhone'da eng ishonchli yo'l - "Ulashish" oynasi (Fayllar, Telegram, Pochta...)
+  try {
+    const file = new File([blob], fname, { type:'application/json' });
+    if (navigator.canShare && navigator.canShare({ files:[file] })) {
+      await navigator.share({ files:[file], title:'Rejam zaxira' });
+      markExported();
+      toast('Zaxira saqlandi');
+      return;
+    }
+  } catch(e){
+    if (e && e.name === 'AbortError') return;
+  }
+  try {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = fname;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
+    markExported();
+    toast('Zaxira fayl yuklandi');
+  } catch(e){
+    toast("Saqlab bo'lmadi - matnni nusxalang");
+  }
+}
+
+async function copyBackup(){
+  try {
+    await navigator.clipboard.writeText(backupText());
+    markExported();
+    toast('Nusxa olindi - biror joyga saqlab qo\'ying');
+  } catch(e){
+    toast("Nusxa olib bo'lmadi");
+  }
+}
+
+function applySnapshot(snap){
+  if (!snap || !Array.isArray(snap.plans)) { toast('Fayl mos emas'); return false; }
+  state.plans = snap.plans;
+  state.tasks = Array.isArray(snap.tasks) ? snap.tasks : [];
+  persistPlans(); persistTasks();
+  state.showBackup = false;
+  render();
+  toast('Tiklandi: ' + state.plans.length + ' reja, ' + state.tasks.length + ' vazifa');
+  return true;
+}
+
+function toast(msg){
+  let el = document.getElementById('rp-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'rp-toast'; el.className = 'rp-toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.add('rp-toast-show');
+  clearTimeout(el.__t);
+  el.__t = setTimeout(() => el.classList.remove('rp-toast-show'), 2800);
+}
 
 function freshPlanDraft(today){
   return { name:'', category: CATS[0].id, target:'', unit:'ta', startDate: toKey(today), endDate: toKey(addDays(today,29)), mode:'flatten' };
@@ -203,10 +369,12 @@ function render(){
   app.innerHTML = `
     ${renderHeader(today)}
     ${renderBanner(today)}
+    ${renderBackupNudge()}
     ${renderTabbar()}
     <div id="tab-content">${renderTab(today)}</div>
     ${state.showAddPlan ? renderAddPlanModal(today) : ''}
     ${state.showAddTask ? renderAddTaskModal() : ''}
+    ${state.showBackup ? renderBackupModal() : ''}
   `;
   // sync known ids after render so entrance animation only plays once per item
   knownPlanIds = new Set(state.plans.map(p=>p.id));
@@ -216,9 +384,60 @@ function render(){
 function renderHeader(today){
   return `
     <header class="rp-header">
-      <div class="rp-header-date">${fmtUz(today)}</div>
-      <h1 class="rp-title">Rejam</h1>
+      <div class="rp-header-row">
+        <div>
+          <div class="rp-header-date">${fmtUz(today)}</div>
+          <h1 class="rp-title">Rejam</h1>
+        </div>
+        <button class="rp-gear-btn" data-action="open-backup" aria-label="Zaxira">&#9881;</button>
+      </div>
     </header>`;
+}
+
+function renderBackupNudge(){
+  if (state.plans.length === 0 && state.tasks.length === 0) return '';
+  const last = lastExportAt();
+  const days = last ? Math.floor((Date.now() - last) / 86400000) : 999;
+  if (days < 14) return '';
+  const txt = last
+    ? `Oxirgi zaxiradan beri ${days} kun o'tdi.`
+    : "Ma'lumotingizning telefondan tashqarida nusxasi yo'q.";
+  return `
+    <div class="rp-nudge">
+      <div class="rp-nudge-text">${txt}</div>
+      <button class="rp-nudge-btn" data-action="export-data">Zaxira olish</button>
+    </div>`;
+}
+
+function renderBackupModal(){
+  const last = lastExportAt();
+  const lastTxt = last ? fmtUz(new Date(last)) : 'hech qachon';
+  const pers = state.storagePersisted;
+  const persTxt = pers === true
+    ? "<b style='color:#7A8F5C'>Yoqilgan</b> \u2014 brauzer bu ma'lumotni o'zi o'chirmaydi"
+    : (pers === false
+        ? "<b style='color:#B75B3D'>Yoqilmagan</b> \u2014 ilovani bosh ekranga o'rnatsangiz yoqiladi"
+        : "noma'lum (brauzer qo'llamaydi)");
+  return `
+    <div class="rp-modal-overlay" data-action="close-backup">
+      <div class="rp-modal" data-action="noop">
+        <div class="rp-modal-header"><span>Zaxira va xavfsizlik</span><button class="rp-icon-btn" data-action="close-backup">&#10005;</button></div>
+
+        <div class="rp-info-box">
+          <div class="rp-info-row"><span>Bu qurilmada</span><b>${state.plans.length} reja &middot; ${state.tasks.length} vazifa</b></div>
+          <div class="rp-info-row"><span>Doimiy xotira</span><span>${persTxt}</span></div>
+          <div class="rp-info-row"><span>Oxirgi zaxira</span><b>${lastTxt}</b></div>
+        </div>
+
+        <p class="rp-note">Ma'lumot uch joyda saqlanadi: tez xotira, zaxira nusxa va IndexedDB. Bittasi o'chsa, ilova qolganidan avtomatik tiklaydi. Lekin telefon yo'qolsa yoki tozalansa &mdash; faqat tashqi zaxira qutqaradi.</p>
+
+        <button class="rp-save-btn" data-action="export-data">Zaxira faylni saqlash</button>
+        <button class="rp-add-btn" data-action="copy-backup">Matn sifatida nusxa olish</button>
+        <button class="rp-add-btn" data-action="import-data">Zaxiradan tiklash</button>
+        <input type="file" id="rp-import-file" accept="application/json,.json,text/plain" hidden />
+        <p class="rp-note rp-note-small">Tiklash hozirgi ma'lumotning ustiga yozadi.</p>
+      </div>
+    </div>`;
 }
 
 function renderBanner(today){
@@ -337,7 +556,7 @@ function renderAddPlanModal(today){
   const d = planDraft;
   return `
     <div class="rp-modal-overlay" data-action="close-modal">
-      <div class="rp-modal" onclick="event.stopPropagation()">
+      <div class="rp-modal" data-action="noop">
         <div class="rp-modal-header"><span>Yangi reja</span><button class="rp-icon-btn" data-action="close-modal">✕</button></div>
         <label class="rp-field"><span>Nomi</span>
           <input id="f-plan-name" data-draft="plan" data-field="name" value="${esc(d.name)}" placeholder="Masalan: 180 ta video" />
@@ -438,7 +657,7 @@ function renderAddTaskModal(){
     </div>`;
   return `
     <div class="rp-modal-overlay" data-action="close-modal">
-      <div class="rp-modal" onclick="event.stopPropagation()">
+      <div class="rp-modal" data-action="noop">
         <div class="rp-modal-header"><span>Yangi vazifa</span><button class="rp-icon-btn" data-action="close-modal">✕</button></div>
         <label class="rp-field"><span>Vazifa</span><input id="f-task-text" data-draft="task" data-field="text" value="${esc(d.text)}" placeholder="Masalan: Video montaj qilish" /></label>
         <div class="rp-field"><span>Kategoriya</span>
@@ -554,7 +773,14 @@ const handlers = {
     render();
   },
   'open-add-plan': () => { planDraft = { ...freshPlanDraft(new Date()), __init:true }; state.showAddPlan = true; render(); },
+  'noop': () => {},
   'close-modal': () => { state.showAddPlan = false; state.showAddTask = false; render(); },
+
+  'open-backup': () => { state.showBackup = true; render(); requestPersistence().then(render); },
+  'close-backup': () => { state.showBackup = false; render(); },
+  'export-data': () => exportData(),
+  'copy-backup': () => copyBackup(),
+  'import-data': () => { const i = document.getElementById('rp-import-file'); if (i) i.click(); },
   'set-plan-field': (btn) => { planDraft[btn.dataset.field] = btn.dataset.value; render(); },
   'save-plan': () => addPlan(),
   'expand-plan': (btn) => { const id=btn.dataset.id; state.expandedPlanId = state.expandedPlanId===id ? null : id; render(); },
@@ -596,5 +822,22 @@ document.addEventListener('input', (e) => {
   else if (el.dataset && el.dataset.draft === 'task') taskDraft[el.dataset.field] = el.value;
 });
 
+// Zaxira faylni o'qish
+document.addEventListener('change', (e) => {
+  const el = e.target;
+  if (!el || el.id !== 'rp-import-file') return;
+  const f = el.files && el.files[0];
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => applySnapshot(safeParse(rd.result, null));
+  rd.onerror = () => toast("Faylni o'qib bo'lmadi");
+  rd.readAsText(f);
+});
+
+// Ilova fonga ketganda / yopilayotganda ham yozib qo'yamiz
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') mirror(); });
+window.addEventListener('pagehide', () => mirror());
+
 // ==================== Init ====================
 render();
+bootstrapStorage();

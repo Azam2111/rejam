@@ -154,3 +154,27 @@ body {
   25% { opacity:1; transform: translate(-50%, -6px) scale(1.15); }
   100% { opacity:0; transform: translate(-50%, -28px) scale(1); }
 }
+
+/* ==================== Zaxira / durable storage ==================== */
+.rp-header-row { display:flex; align-items:flex-end; justify-content:space-between; gap:12px; }
+.rp-gear-btn { background:none; border:none; color:#B7A489; font-size:22px; line-height:1; padding:6px; margin-bottom:4px; cursor:pointer; transition: color .2s, transform .15s cubic-bezier(.34,1.56,.64,1); }
+.rp-gear-btn:active { transform: scale(0.9); color:#C08A2E; }
+
+.rp-nudge { display:flex; align-items:center; gap:10px; background:#FBF1DC; border:1px solid #E6D3AE; border-radius:14px; padding:10px 12px; margin-bottom:14px; }
+.rp-nudge-text { flex:1; font-size:13px; color:#7A5F3A; line-height:1.35; }
+.rp-nudge-btn { flex-shrink:0; background:#FFFCF6; border:1px solid #DCCBA9; color:#3A2A1C; font-family:'Fraunces',serif; font-weight:600; font-size:13px; padding:8px 12px; border-radius:10px; cursor:pointer; }
+.rp-nudge-btn:active { transform: scale(0.96); border-color:#C08A2E; }
+
+.rp-info-box { background:#F8F1E4; border-radius:14px; padding:12px 14px; margin-bottom:14px; }
+.rp-info-row { display:flex; justify-content:space-between; align-items:baseline; gap:12px; font-size:13px; color:#8A7259; padding:5px 0; }
+.rp-info-row + .rp-info-row { border-top:1px solid #EADFC9; }
+.rp-info-row b { color:#3A2A1C; text-align:right; }
+.rp-info-row span:last-child { text-align:right; }
+
+.rp-note { font-size:12.5px; line-height:1.5; color:#8A7259; margin:0 0 16px; }
+.rp-note-small { font-size:11.5px; margin:10px 0 0; text-align:center; }
+
+.rp-modal .rp-add-btn { margin-top:10px; }
+
+.rp-toast { position:fixed; left:50%; bottom:28px; transform:translate(-50%, 20px); background:#3A2A1C; color:#FBF3E4; font-size:13.5px; padding:11px 18px; border-radius:12px; max-width:88vw; text-align:center; opacity:0; pointer-events:none; z-index:200; transition: opacity .25s ease, transform .3s cubic-bezier(.32,1.4,.6,1); box-shadow:0 8px 24px rgba(43,31,20,0.25); }
+.rp-toast-show { opacity:1; transform:translate(-50%, 0); }
