@@ -1241,7 +1241,7 @@ function render(){
     if (ta) {
       ta.focus();
       ta.setSelectionRange(ta.value.length, ta.value.length);
-      setTimeout(() => { syncViewport(); try { ta.scrollIntoView({ block:'center' }); } catch(e){} }, 300);
+      setTimeout(() => { syncViewport(); try { ta.scrollIntoView({ block:'nearest' }); } catch(e){} }, 300);
     }
   }
 }
@@ -2007,10 +2007,10 @@ syncViewport();
 document.addEventListener('focusin', (e) => {
   const el = e.target;
   if (!el || !el.closest || !el.closest('.rp-modal')) return;
-  setTimeout(() => {
-    syncViewport();
-    try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(err){}
-  }, 250);
+  // silliq scroll iOS'ning o'z scrolli bilan urishadi - shuning uchun 'nearest', animatsiyasiz
+  const nudge = () => { syncViewport(); try { el.scrollIntoView({ block: 'nearest' }); } catch(err){} };
+  setTimeout(nudge, 60);
+  setTimeout(nudge, 350);
 });
 
 // ==================== Init ====================
