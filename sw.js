@@ -1,5 +1,5 @@
-const CACHE_NAME = 'rejam-v6';
-const ASSETS = ['./', './index.html', './style.css', './app.js', './cloud.js', './firebase-config.js', './manifest.json', './icon-192.png', './icon-512.png'];
+const CACHE_NAME = 'rejam-v7';
+const ASSETS = ['./index.html', './style.css', './app.js', './cloud.js', './firebase-config.js', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -30,21 +30,21 @@ self.addEventListener('fetch', (event) => {
   try { url = new URL(req.url); } catch (e) { return; }
   if (url.origin !== self.location.origin) return;
 
+  // Bitta tarmoq so'rovi: uni ham waitUntil, ham respondWith ishlatadi.
+  // waitUntil sinxron, hech qanday await'dan oldin chaqiriladi.
+  const network = fetch(req).then(res => {
+    if (res && res.status === 200 && res.type === 'basic') {
+      caches.open(CACHE_NAME).then(c => c.put(req, res.clone())).catch(() => {});
+    }
+    return res;
+  }).catch(() => null);
+
+  event.waitUntil(network);
+
   event.respondWith((async () => {
     const cache = await caches.open(CACHE_NAME);
     const cached = await cache.match(req);
-
-    const network = fetch(req).then(res => {
-      if (res && res.status === 200 && res.type === 'basic') {
-        cache.put(req, res.clone()).catch(() => {});
-      }
-      return res;
-    }).catch(() => null);
-
-    if (cached) {
-      try { event.waitUntil(network); } catch (e) {}
-      return cached;
-    }
+    if (cached) return cached;
 
     const res = await network;
     if (res) return res;

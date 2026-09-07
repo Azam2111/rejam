@@ -227,3 +227,20 @@ body {
 
 .rp-idea-actions { flex-wrap:wrap; justify-content:flex-end; }
 .rp-idea-foot { flex-wrap:wrap; }
+
+/* ==================== Saqlash xatosi va import ko'rib chiqish ==================== */
+.rp-save-error { display:flex; align-items:center; gap:10px; background:#F8E0D6; border:1px solid #E0A88F; border-radius:14px; padding:11px 13px; margin-bottom:14px; }
+.rp-save-error-text { flex:1; font-size:12.5px; line-height:1.4; color:#8A4A30; }
+.rp-save-error-btn { flex-shrink:0; background:#FFFCF6; border:1px solid #E0A88F; color:#8A4A30; font-family:'Fraunces',serif; font-weight:600; font-size:12.5px; padding:8px 12px; border-radius:10px; cursor:pointer; }
+
+.rp-import-box { background:#F8F1E4; border:1px solid #E6D3AE; border-radius:14px; padding:13px 14px; margin-bottom:16px; }
+.rp-import-bad { background:#F8E0D6; border-color:#E0A88F; }
+.rp-import-title { font-family:'Fraunces',serif; font-weight:600; font-size:14px; color:#3A2A1C; margin-bottom:9px; }
+.rp-import-row { display:flex; justify-content:space-between; align-items:baseline; font-size:13px; color:#8A7259; padding:4px 0; }
+.rp-import-row b { color:#3A2A1C; }
+.rp-import-down { color:#B75B3D !important; }
+.rp-import-msg { font-size:12px; line-height:1.5; color:#8A7259; margin-top:9px; padding-top:9px; border-top:1px solid #EADFC9; }
+.rp-import-warn { color:#B75B3D; }
+.rp-import-actions { display:flex; align-items:center; gap:12px; margin-top:12px; }
+.rp-import-actions .rp-save-btn { flex:1; margin:0; }
+.rp-revert-btn { border-color:#E0A88F !important; color:#8A4A30 !important; }
