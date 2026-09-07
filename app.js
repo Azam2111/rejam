@@ -27,14 +27,45 @@ function lastNDays(n, today){ const arr=[]; for(let i=n-1;i>=0;i--) arr.push(add
 function catOf(id){ return CATS.find(c=>c.id===id) || CATS[CATS.length-1]; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 
+// Pauzada o'tgan kunlar soni (yig'ilgan + hozir davom etayotgani)
+function pausedDaysOf(plan, today){
+  let d = Number(plan.pauseDays || 0);
+  if (plan.paused && plan.pausedAt) {
+    d += Math.max(daysBetween(parseKey(plan.pausedAt), today), 0);
+  }
+  return d;
+}
+
+// Ketma-ketlik: bugun (yoki kecha) bilan tugaydigan uzluksiz kunlar
+function computeStreak(plan, today){
+  const log = plan.log || {};
+  const has = k => Number(log[k] || 0) > 0;
+  let d = new Date(today);
+  if (!has(toKey(d))) d = addDays(d, -1);
+  let current = 0;
+  while (has(toKey(d))) { current++; d = addDays(d, -1); }
+
+  const keys = Object.keys(log).filter(has).sort();
+  let best = 0, run = 0, prev = null;
+  for (const k of keys){
+    if (prev && daysBetween(parseKey(prev), parseKey(k)) === 1) run++; else run = 1;
+    if (run > best) best = run;
+    prev = k;
+  }
+  return { current, best };
+}
+
 function computeStats(plan, today){
   const start = parseKey(plan.startDate);
-  const originalEnd = parseKey(plan.endDate);
-  const originalTotalDays = Math.max(daysBetween(start, originalEnd)+1, 1);
+  const pauseDays = pausedDaysOf(plan, today);
+  const baseEnd = parseKey(plan.endDate);
+  // Sur'at ASL muddatdan hisoblanadi - pauza uni pasaytirmaydi, faqat muddatni suradi
+  const originalTotalDays = Math.max(daysBetween(start, baseEnd)+1, 1);
   const rate = plan.target / originalTotalDays;
+  const originalEnd = addDays(baseEnd, pauseDays);
   const totalDone = Object.values(plan.log||{}).reduce((s,v)=>s+Number(v||0),0);
 
-  const daysPassedRaw = daysBetween(start, today)+1;
+  const daysPassedRaw = daysBetween(start, today)+1-pauseDays;
   const daysPassedForPace = Math.min(Math.max(daysPassedRaw,0), originalTotalDays);
   const expectedByNow = daysPassedForPace*rate;
   const paceDiff = totalDone - expectedByNow;
@@ -61,13 +92,14 @@ function computeStats(plan, today){
 
   let status = 'ontrack';
   if (isComplete) status = 'done';
+  else if (plan.paused) status = 'paused';
   else if (isPastDeadline) status = 'overdue';
   else if (paceDiff >= rate*0.5) status = 'ahead';
   else if (paceDiff <= -rate*0.5) status = 'behind';
 
   return {
     totalDone, remaining, dailyTargetDisplay, doneToday, dynamicEnd, extraDays,
-    isComplete, isPastDeadline, status,
+    isComplete, isPastDeadline, status, pauseDays,
     progressPct: Math.min((totalDone/plan.target)*100, 100),
     expectedPct: Math.min((expectedByNow/plan.target)*100, 100),
     originalTotalDays, rate,
@@ -80,6 +112,7 @@ const STATUS_META = {
   behind: { label: 'Orqada qolyapsiz', color: '#B75B3D' },
   overdue:{ label: "Muddat o'tdi", color: '#B75B3D' },
   done:   { label: 'Bajarildi', color: '#7A8F5C' },
+  paused: { label: 'Pauzada', color: '#A08F76' },
 };
 
 // ==================== State ====================
@@ -87,11 +120,17 @@ let state = {
   tab: 'rejalar',
   plans: safeParse(localStorage.getItem('reja-plans'), []),
   tasks: safeParse(localStorage.getItem('reja-daily-tasks'), []),
+  ideas: safeParse(localStorage.getItem('reja-ideas'), []),
   expandedPlanId: null,
   confirmDeleteId: null,
   showAddPlan: false,
   showAddTask: false,
   showBackup: false,
+  showCapture: false,
+  convertingIdeaId: null,
+  editingPlanId: null,
+  editingTaskId: null,
+  undo: null,
   storagePersisted: null,
   pulses: {},
   selectedDayKey: toKey(new Date()),
@@ -140,7 +179,7 @@ function idbGet(key){
 }
 
 function snapshot(){
-  return { v:1, savedAt: Date.now(), plans: state.plans, tasks: state.tasks };
+  return { v:2, savedAt: Date.now(), plans: state.plans, tasks: state.tasks, ideas: state.ideas };
 }
 
 // Har bir o'zgarishda hamma qatlamga yozamiz
@@ -148,7 +187,29 @@ function mirror(){
   const snap = snapshot();
   try { localStorage.setItem('reja-backup', JSON.stringify(snap)); } catch(e){}
   idbSet('snapshot', snap).catch(()=>{});
+  if (window.rejamCloud && window.rejamCloud.push) window.rejamCloud.push(snap);
 }
+
+// ---------- Bulut bilan aloqa nuqtalari (cloud.js shularni chaqiradi) ----------
+window.rejamLocalSavedAt = function(){
+  const s = safeParse(localStorage.getItem('reja-backup'), null);
+  return s ? Number(s.savedAt || 0) : 0;
+};
+
+window.rejamApplyRemote = function(remote){
+  if (!remote) return;
+  if (Array.isArray(remote.plans)) state.plans = remote.plans;
+  if (Array.isArray(remote.tasks)) state.tasks = remote.tasks;
+  if (Array.isArray(remote.ideas)) state.ideas = remote.ideas;
+  const snap = { v:2, savedAt: Number(remote.savedAt || Date.now()), plans: state.plans, tasks: state.tasks, ideas: state.ideas };
+  try { localStorage.setItem('reja-plans', JSON.stringify(state.plans)); } catch(e){}
+  try { localStorage.setItem('reja-daily-tasks', JSON.stringify(state.tasks)); } catch(e){}
+  try { localStorage.setItem('reja-ideas', JSON.stringify(state.ideas)); } catch(e){}
+  try { localStorage.setItem('reja-backup', JSON.stringify(snap)); } catch(e){}
+  idbSet('snapshot', snap).catch(()=>{});
+  render();
+  toast('Boshqa qurilmadan yangilandi');
+};
 
 function persistPlans(){
   try { localStorage.setItem('reja-plans', JSON.stringify(state.plans)); } catch(e){}
@@ -156,6 +217,10 @@ function persistPlans(){
 }
 function persistTasks(){
   try { localStorage.setItem('reja-daily-tasks', JSON.stringify(state.tasks)); } catch(e){}
+  mirror();
+}
+function persistIdeas(){
+  try { localStorage.setItem('reja-ideas', JSON.stringify(state.ideas)); } catch(e){}
   mirror();
 }
 
@@ -178,16 +243,18 @@ async function bootstrapStorage(){
   await requestPersistence();
   let restored = false;
   try {
-    const empty = state.plans.length === 0 && state.tasks.length === 0;
+    const empty = state.plans.length === 0 && state.tasks.length === 0 && state.ideas.length === 0;
     if (empty) {
       let snap = null;
       try { snap = await idbGet('snapshot'); } catch(e){}
       if (!snap) snap = safeParse(localStorage.getItem('reja-backup'), null);
-      if (snap && ((snap.plans||[]).length || (snap.tasks||[]).length)) {
+      if (snap && ((snap.plans||[]).length || (snap.tasks||[]).length || (snap.ideas||[]).length)) {
         state.plans = Array.isArray(snap.plans) ? snap.plans : [];
         state.tasks = Array.isArray(snap.tasks) ? snap.tasks : [];
+        state.ideas = Array.isArray(snap.ideas) ? snap.ideas : [];
         try { localStorage.setItem('reja-plans', JSON.stringify(state.plans)); } catch(e){}
         try { localStorage.setItem('reja-daily-tasks', JSON.stringify(state.tasks)); } catch(e){}
+        try { localStorage.setItem('reja-ideas', JSON.stringify(state.ideas)); } catch(e){}
         restored = true;
       }
     } else {
@@ -250,11 +317,33 @@ function applySnapshot(snap){
   if (!snap || !Array.isArray(snap.plans)) { toast('Fayl mos emas'); return false; }
   state.plans = snap.plans;
   state.tasks = Array.isArray(snap.tasks) ? snap.tasks : [];
-  persistPlans(); persistTasks();
+  state.ideas = Array.isArray(snap.ideas) ? snap.ideas : [];
+  persistPlans(); persistTasks(); persistIdeas();
   state.showBackup = false;
   render();
-  toast('Tiklandi: ' + state.plans.length + ' reja, ' + state.tasks.length + ' vazifa');
+  toast('Tiklandi: ' + state.plans.length + ' reja, ' + state.tasks.length + ' vazifa, ' + state.ideas.length + ' fikr');
   return true;
+}
+
+// ---------- O'chirishni bekor qilish ----------
+let undoTimer = null;
+function pushUndo(label, restore){
+  state.undo = { label, restore };
+  clearTimeout(undoTimer);
+  undoTimer = setTimeout(() => { state.undo = null; render(); }, 6000);
+}
+function doUndo(){
+  if (!state.undo) return;
+  const fn = state.undo.restore;
+  state.undo = null;
+  clearTimeout(undoTimer);
+  fn();
+  render();
+  toast('Qaytarildi');
+}
+function renderUndoBar(){
+  if (!state.undo) return '';
+  return `<div class="rp-undo"><span>${esc(state.undo.label)}</span><button class="rp-undo-btn" data-action="undo">Bekor qilish</button></div>`;
 }
 
 function toast(msg){
@@ -271,7 +360,7 @@ function toast(msg){
 }
 
 function freshPlanDraft(today){
-  return { name:'', category: CATS[0].id, target:'', unit:'ta', startDate: toKey(today), endDate: toKey(addDays(today,29)), mode:'flatten' };
+  return { name:'', category: CATS[0].id, target:'', unit:'ta', startDate: toKey(today), endDate: toKey(addDays(today,29)), mode:'flatten', why:'' };
 }
 function freshTaskDraft(defaultDate){
   return { text:'', category: CATS[0].id, type:'once', date: defaultDate, weekdays: [] };
@@ -280,6 +369,7 @@ function freshTaskDraft(defaultDate){
 // ==================== Actions ====================
 function addPlan(){
   const nameEl = document.getElementById('f-plan-name');
+  const whyEl = document.getElementById('f-plan-why');
   const targetEl = document.getElementById('f-plan-target');
   const unitEl = document.getElementById('f-plan-unit');
   const startEl = document.getElementById('f-plan-start');
@@ -289,21 +379,136 @@ function addPlan(){
   const unit = unitEl.value.trim() || 'ta';
   const startDate = startEl.value;
   const endDate = endEl.value;
+  const why = whyEl ? whyEl.value.trim() : '';
   if (!name || !(target>0) || !startDate || !endDate || endDate < startDate) return;
+
+  if (state.editingPlanId){
+    state.plans = state.plans.map(p => p.id !== state.editingPlanId ? p : {
+      ...p, name, category: planDraft.category, target, unit, startDate, endDate,
+      mode: planDraft.mode, why,
+    });
+    persistPlans();
+    state.editingPlanId = null;
+    state.showAddPlan = false;
+    render();
+    toast("O'zgartirildi");
+    return;
+  }
+
   const newPlan = {
     id: uid(), name, category: planDraft.category, target, unit,
-    startDate, endDate, mode: planDraft.mode, log: {}, createdAt: Date.now(),
+    startDate, endDate, mode: planDraft.mode, why, log: {}, createdAt: Date.now(),
   };
   state.plans.unshift(newPlan);
   persistPlans();
+  if (state.convertingIdeaId) {
+    state.ideas = state.ideas.filter(i => i.id !== state.convertingIdeaId);
+    persistIdeas();
+    state.convertingIdeaId = null;
+  }
   state.showAddPlan = false;
   render();
 }
 
+// ==================== Fikrlar (tez yozib olish) ====================
+let ideaDraft = '';
+
+function addIdea(){
+  const el = document.getElementById('f-idea-text');
+  const text = ((el && el.value) || ideaDraft || '').trim();
+  if (!text) return;
+  state.ideas.unshift({ id: uid(), text, createdAt: Date.now() });
+  persistIdeas();
+  ideaDraft = '';
+  state.showCapture = false;
+  render();
+  toast('Yozib olindi');
+}
+
+function deleteIdea(id){
+  const idx = state.ideas.findIndex(i => i.id === id);
+  if (idx < 0) return;
+  const removed = state.ideas[idx];
+  state.ideas = state.ideas.filter(i => i.id !== id);
+  persistIdeas();
+  pushUndo("Fikr o'chirildi", () => {
+    state.ideas.splice(Math.min(idx, state.ideas.length), 0, removed);
+    persistIdeas();
+  });
+  render();
+}
+
+function ideaToTask(id){
+  const it = state.ideas.find(i => i.id === id);
+  if (!it) return;
+  const text = it.text.replace(/\s+/g, ' ').trim().slice(0, 120);
+  state.tab = 'kunlik';
+  taskDraft = { ...freshTaskDraft(state.selectedDayKey), text, __init:true };
+  state.convertingIdeaId = id;
+  state.showAddTask = true;
+  render();
+}
+
+function ideaToPlan(id){
+  const it = state.ideas.find(i => i.id === id);
+  if (!it) return;
+  const name = it.text.replace(/\s+/g, ' ').trim().slice(0, 80);
+  planDraft = { ...freshPlanDraft(new Date()), name, __init:true };
+  state.convertingIdeaId = id;
+  state.showAddPlan = true;
+  render();
+}
+
+function oldestIdeaDays(){
+  if (!state.ideas.length) return 0;
+  const oldest = Math.min(...state.ideas.map(i => i.createdAt || Date.now()));
+  return Math.floor((Date.now() - oldest) / 86400000);
+}
+function agoUz(ts){
+  const d = Math.floor((Date.now() - ts) / 86400000);
+  if (d <= 0) return 'bugun';
+  if (d === 1) return 'kecha';
+  if (d < 30) return d + ' kun oldin';
+  return fmtUz(new Date(ts));
+}
+
 function deletePlan(id){
+  const idx = state.plans.findIndex(p=>p.id===id);
+  if (idx < 0) return;
+  const removed = state.plans[idx];
   state.plans = state.plans.filter(p=>p.id!==id);
   persistPlans();
   state.confirmDeleteId = null;
+  pushUndo("Reja o'chirildi", () => {
+    state.plans.splice(Math.min(idx, state.plans.length), 0, removed);
+    persistPlans();
+  });
+  render();
+}
+
+function togglePause(id){
+  const todayKey = toKey(new Date());
+  state.plans = state.plans.map(p => {
+    if (p.id !== id) return p;
+    if (p.paused){
+      const add = p.pausedAt ? Math.max(daysBetween(parseKey(p.pausedAt), new Date()), 0) : 0;
+      return { ...p, paused:false, pausedAt:null, pauseDays: Number(p.pauseDays||0) + add };
+    }
+    return { ...p, paused:true, pausedAt: todayKey };
+  });
+  persistPlans();
+  render();
+}
+
+function editPlan(id){
+  const p = state.plans.find(x => x.id === id);
+  if (!p) return;
+  planDraft = {
+    name: p.name, category: p.category, target: p.target, unit: p.unit,
+    startDate: p.startDate, endDate: p.endDate, mode: p.mode, why: p.why || '', __init: true,
+  };
+  state.editingPlanId = id;
+  state.showAddPlan = true;
   render();
 }
 
@@ -333,6 +538,20 @@ function addTask(){
   if (!text) return;
   if (taskDraft.type==='once' && !taskDraft.date) return;
   if (taskDraft.type==='weekly' && taskDraft.weekdays.length===0) return;
+  if (state.editingTaskId){
+    state.tasks = state.tasks.map(t => t.id !== state.editingTaskId ? t : {
+      ...t, text, category: taskDraft.category, type: taskDraft.type,
+      weekdays: taskDraft.type==='weekly' ? taskDraft.weekdays : [],
+      date: taskDraft.type==='once' ? taskDraft.date : null,
+    });
+    persistTasks();
+    state.editingTaskId = null;
+    state.showAddTask = false;
+    render();
+    toast("O'zgartirildi");
+    return;
+  }
+
   const newTask = {
     id: uid(), text, category: taskDraft.category, type: taskDraft.type,
     weekdays: taskDraft.type==='weekly' ? taskDraft.weekdays : [],
@@ -341,13 +560,37 @@ function addTask(){
   };
   state.tasks.unshift(newTask);
   persistTasks();
+  if (state.convertingIdeaId){
+    state.ideas = state.ideas.filter(i => i.id !== state.convertingIdeaId);
+    persistIdeas();
+    state.convertingIdeaId = null;
+  }
   state.showAddTask = false;
   render();
 }
 
+function editTask(id){
+  const t = state.tasks.find(x => x.id === id);
+  if (!t) return;
+  taskDraft = {
+    text: t.text, category: t.category, type: t.type,
+    date: t.date || state.selectedDayKey, weekdays: (t.weekdays||[]).slice(), __init: true,
+  };
+  state.editingTaskId = id;
+  state.showAddTask = true;
+  render();
+}
+
 function deleteTask(id){
+  const idx = state.tasks.findIndex(t=>t.id===id);
+  if (idx < 0) return;
+  const removed = state.tasks[idx];
   state.tasks = state.tasks.filter(t=>t.id!==id);
   persistTasks();
+  pushUndo("Vazifa o'chirildi", () => {
+    state.tasks.splice(Math.min(idx, state.tasks.length), 0, removed);
+    persistTasks();
+  });
   render();
 }
 
@@ -369,16 +612,24 @@ function render(){
   app.innerHTML = `
     ${renderHeader(today)}
     ${renderBanner(today)}
+    ${renderIdeaNudge()}
     ${renderBackupNudge()}
     ${renderTabbar()}
     <div id="tab-content">${renderTab(today)}</div>
     ${state.showAddPlan ? renderAddPlanModal(today) : ''}
     ${state.showAddTask ? renderAddTaskModal() : ''}
     ${state.showBackup ? renderBackupModal() : ''}
+    ${state.showCapture ? renderCaptureModal() : ''}
+    ${renderFab()}
+    ${renderUndoBar()}
   `;
   // sync known ids after render so entrance animation only plays once per item
   knownPlanIds = new Set(state.plans.map(p=>p.id));
   knownTaskIds = new Set(state.tasks.map(t=>t.id));
+  if (state.showCapture) {
+    const ta = document.getElementById('f-idea-text');
+    if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+  }
 }
 
 function renderHeader(today){
@@ -409,6 +660,14 @@ function renderBackupNudge(){
     </div>`;
 }
 
+function cloudStatusTxt(){
+  const c = window.rejamCloud;
+  if (!c || !c.enabled) return "ulanmagan (faqat shu qurilmada)";
+  if (c.status === 'online') return "<b style='color:#7A8F5C'>Ulangan</b>";
+  if (c.status === 'connecting') return "ulanmoqda...";
+  return "<b style='color:#B75B3D'>Xato</b>";
+}
+
 function renderBackupModal(){
   const last = lastExportAt();
   const lastTxt = last ? fmtUz(new Date(last)) : 'hech qachon';
@@ -424,9 +683,10 @@ function renderBackupModal(){
         <div class="rp-modal-header"><span>Zaxira va xavfsizlik</span><button class="rp-icon-btn" data-action="close-backup">&#10005;</button></div>
 
         <div class="rp-info-box">
-          <div class="rp-info-row"><span>Bu qurilmada</span><b>${state.plans.length} reja &middot; ${state.tasks.length} vazifa</b></div>
+          <div class="rp-info-row"><span>Bu qurilmada</span><b>${state.plans.length} reja &middot; ${state.tasks.length} vazifa &middot; ${state.ideas.length} fikr</b></div>
           <div class="rp-info-row"><span>Doimiy xotira</span><span>${persTxt}</span></div>
           <div class="rp-info-row"><span>Oxirgi zaxira</span><b>${lastTxt}</b></div>
+          <div class="rp-info-row"><span>Bulut</span><span>${cloudStatusTxt()}</span></div>
         </div>
 
         <p class="rp-note">Ma'lumot uch joyda saqlanadi: tez xotira, zaxira nusxa va IndexedDB. Bittasi o'chsa, ilova qolganidan avtomatik tiklaydi. Lekin telefon yo'qolsa yoki tozalansa &mdash; faqat tashqi zaxira qutqaradi.</p>
@@ -454,15 +714,79 @@ function renderBanner(today){
 }
 
 function renderTabbar(){
-  const tabs = [['rejalar','Rejalar'], ['kunlik','Kunlik'], ['hisobot','Hisobot']];
+  const n = state.ideas.length;
+  const tabs = [['rejalar','Rejalar'], ['kunlik','Kunlik'], ['hisobot','Hisobot'], ['fikrlar','Fikrlar']];
   return `<div class="rp-tabbar">
-    ${tabs.map(([id,label]) => `<button class="rp-tab${state.tab===id?' rp-tab-active':''}" data-action="set-tab" data-tab="${id}">${label}</button>`).join('')}
+    ${tabs.map(([id,label]) => {
+      const badge = (id==='fikrlar' && n>0 && state.tab!=='fikrlar') ? `<i class="rp-badge">${n}</i>` : '';
+      return `<button class="rp-tab${state.tab===id?' rp-tab-active':''}" data-action="set-tab" data-tab="${id}">${label}${badge}</button>`;
+    }).join('')}
   </div>`;
+}
+
+function renderIdeaNudge(){
+  if (state.tab === 'fikrlar') return '';
+  const n = state.ideas.length;
+  if (!n) return '';
+  const days = oldestIdeaDays();
+  if (n < 5 && days < 7) return '';
+  const txt = n >= 5
+    ? `${n} ta fikr saralanmagan.`
+    : `Eng eski fikr ${days} kundan beri kutyapti.`;
+  return `
+    <div class="rp-nudge rp-nudge-idea" data-action="set-tab" data-tab="fikrlar">
+      <div class="rp-nudge-text">${txt}</div>
+      <span class="rp-nudge-btn">Ko'rish</span>
+    </div>`;
+}
+
+function renderIdeasTab(){
+  if (!state.ideas.length) {
+    return `<div class="rp-empty">Fikr kelganda pastdagi tugmani bosing.<br>Bu yer xom g'oyalar uchun \u2014 reja qilish keyin.</div>`;
+  }
+  return `
+    <div class="rp-section-note">${state.ideas.length} ta fikr \u2014 vaqtingiz bo'lganda rejaga aylantiring</div>
+    <div class="rp-list">
+      ${state.ideas.map(renderIdeaCard).join('')}
+    </div>`;
+}
+
+function renderIdeaCard(it){
+  return `
+    <div class="rp-idea">
+      <div class="rp-idea-text">${esc(it.text).replace(/\n/g,'<br>')}</div>
+      <div class="rp-idea-foot">
+        <span class="rp-idea-date">${agoUz(it.createdAt || Date.now())}</span>
+        <div class="rp-idea-actions">
+          <button class="rp-idea-btn" data-action="idea-to-task" data-id="${it.id}">Vazifa qil</button>
+          <button class="rp-idea-btn rp-idea-btn-main" data-action="idea-to-plan" data-id="${it.id}">Reja qil</button>
+          <button class="rp-idea-btn" data-action="delete-idea" data-id="${it.id}" aria-label="O'chirish">&#10005;</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderFab(){
+  if (state.showAddPlan || state.showAddTask || state.showBackup || state.showCapture) return '';
+  return `<button class="rp-fab" data-action="open-capture" aria-label="Fikr yozib olish">&#43;</button>`;
+}
+
+function renderCaptureModal(){
+  return `
+    <div class="rp-modal-overlay" data-action="close-capture">
+      <div class="rp-modal rp-modal-capture" data-action="noop">
+        <div class="rp-modal-header"><span>Fikr</span><button class="rp-icon-btn" data-action="close-capture">&#10005;</button></div>
+        <textarea id="f-idea-text" class="rp-idea-input" data-draft="idea" rows="3" placeholder="Xayolga kelgan narsani yozing...">${esc(ideaDraft)}</textarea>
+        <button class="rp-save-btn" data-action="save-idea">Saqlash</button>
+        <p class="rp-note rp-note-small">Enter \u2014 saqlash, Shift+Enter \u2014 yangi qator</p>
+      </div>
+    </div>`;
 }
 
 function renderTab(today){
   if (state.tab==='rejalar') return renderPlansTab(today);
   if (state.tab==='kunlik') return renderDailyTab();
+  if (state.tab==='fikrlar') return renderIdeasTab();
   return renderReportsTab(today);
 }
 
@@ -487,7 +811,15 @@ function renderPlanCard(plan, today){
   const expanded = state.expandedPlanId === plan.id;
   const isNew = !knownPlanIds.has(plan.id);
 
-  const todayRow = !stats.isComplete ? `
+  const streak = computeStreak(plan, today);
+  const streakChip = (!plan.paused && streak.current >= 2)
+    ? `<div class="rp-streak">&#128293; ${streak.current} kun ketma-ket</div>` : '';
+
+  const todayRow = plan.paused ? `
+    <div class="rp-paused-row">
+      <div class="rp-paused-text">Pauzada &mdash; sur'at hisobi to'xtatilgan${stats.pauseDays>0?` (${stats.pauseDays} kun)`:''}</div>
+      <button class="rp-resume-btn" data-action="toggle-pause" data-id="${plan.id}">Davom ettirish</button>
+    </div>` : !stats.isComplete ? `
     <div class="rp-today-row">
       <div class="rp-today-label">
         Bugun: <b>${stats.doneToday}</b> / ${stats.dailyTargetDisplay} ${esc(plan.unit)}
@@ -505,7 +837,12 @@ function renderPlanCard(plan, today){
   const expandedHtml = expanded ? `
     <div class="rp-expanded">
       ${renderHistory(plan, today, cat.color)}
-      <div class="rp-expanded-meta">${fmtUz(parseKey(plan.startDate))} — ${fmtUz(stats.dynamicEnd)} · kuniga ~${Math.round(stats.rate*10)/10} ${esc(plan.unit)}</div>
+      <div class="rp-expanded-meta">${fmtUz(parseKey(plan.startDate))} — ${fmtUz(stats.dynamicEnd)} · kuniga ~${Math.round(stats.rate*10)/10} ${esc(plan.unit)}${streak.best>1?` · rekord ${streak.best} kun`:''}</div>
+      ${plan.why ? `<div class="rp-why">${esc(plan.why).replace(/\n/g,'<br>')}</div>` : ''}
+      <div class="rp-card-tools">
+        <button class="rp-link-btn" data-action="edit-plan" data-id="${plan.id}">&#9998; Tahrirlash</button>
+        <button class="rp-link-btn" data-action="toggle-pause" data-id="${plan.id}">${plan.paused?'&#9654; Davom ettirish':'&#10073;&#10073; Pauza'}</button>
+      </div>
       ${state.confirmDeleteId===plan.id ? `
         <div class="rp-confirm-row">
           <span>O'chirilsinmi?</span>
@@ -534,6 +871,7 @@ function renderPlanCard(plan, today){
         <span>${Math.round(stats.totalDone*10)/10} / ${plan.target} ${esc(plan.unit)}</span>
         <span>${Math.round(stats.progressPct)}%</span>
       </div>
+      ${streakChip}
       ${todayRow}
       ${expandedHtml}
     </div>`;
@@ -557,7 +895,7 @@ function renderAddPlanModal(today){
   return `
     <div class="rp-modal-overlay" data-action="close-modal">
       <div class="rp-modal" data-action="noop">
-        <div class="rp-modal-header"><span>Yangi reja</span><button class="rp-icon-btn" data-action="close-modal">✕</button></div>
+        <div class="rp-modal-header"><span>${state.editingPlanId?'Rejani tahrirlash':'Yangi reja'}</span><button class="rp-icon-btn" data-action="close-modal">✕</button></div>
         <label class="rp-field"><span>Nomi</span>
           <input id="f-plan-name" data-draft="plan" data-field="name" value="${esc(d.name)}" placeholder="Masalan: 180 ta video" />
         </label>
@@ -580,7 +918,10 @@ function renderAddPlanModal(today){
             <button class="rp-mode-btn${d.mode==='extend'?' rp-mode-active':''}" data-action="set-plan-field" data-field="mode" data-value="extend">Muddat cho'zilsin</button>
           </div>
         </div>
-        <button class="rp-save-btn" data-action="save-plan">Rejani saqlash</button>
+        <label class="rp-field"><span>Nega bu reja? (ixtiyoriy)</span>
+          <textarea id="f-plan-why" class="rp-why-input" data-draft="plan" data-field="why" rows="2" placeholder="Ishtiyoq so'nganda o'zingizga eslatadigan satr">${esc(d.why||'')}</textarea>
+        </label>
+        <button class="rp-save-btn" data-action="save-plan">${state.editingPlanId?"O'zgarishlarni saqlash":'Rejani saqlash'}</button>
       </div>
     </div>`;
 }
@@ -640,6 +981,7 @@ function renderTaskRow(t, dateKey){
         <div class="dp-task-text${done?' dp-task-done':''}">${esc(t.text)}</div>
         <div class="dp-task-tag"><span class="dp-task-dot" style="background:${cat.color}"></span> ${cat.label}${recur}</div>
       </div>
+      <button class="dp-task-del" data-action="edit-task" data-id="${t.id}">&#9998;</button>
       <button class="dp-task-del" data-action="delete-task" data-id="${t.id}">🗑</button>
     </div>`;
 }
@@ -658,7 +1000,7 @@ function renderAddTaskModal(){
   return `
     <div class="rp-modal-overlay" data-action="close-modal">
       <div class="rp-modal" data-action="noop">
-        <div class="rp-modal-header"><span>Yangi vazifa</span><button class="rp-icon-btn" data-action="close-modal">✕</button></div>
+        <div class="rp-modal-header"><span>${state.editingTaskId?'Vazifani tahrirlash':'Yangi vazifa'}</span><button class="rp-icon-btn" data-action="close-modal">✕</button></div>
         <label class="rp-field"><span>Vazifa</span><input id="f-task-text" data-draft="task" data-field="text" value="${esc(d.text)}" placeholder="Masalan: Video montaj qilish" /></label>
         <div class="rp-field"><span>Kategoriya</span>
           <div class="rp-pill-row">
@@ -672,7 +1014,7 @@ function renderAddTaskModal(){
           </div>
         </div>
         ${dateOrWeekdays}
-        <button class="rp-save-btn" data-action="save-task">Vazifani saqlash</button>
+        <button class="rp-save-btn" data-action="save-task">${state.editingTaskId?"O'zgarishlarni saqlash":'Vazifani saqlash'}</button>
       </div>
     </div>`;
 }
@@ -772,9 +1114,24 @@ const handlers = {
     state.showAddTask = true;
     render();
   },
-  'open-add-plan': () => { planDraft = { ...freshPlanDraft(new Date()), __init:true }; state.showAddPlan = true; render(); },
+  'open-add-plan': () => { state.editingPlanId = null; planDraft = { ...freshPlanDraft(new Date()), __init:true }; state.showAddPlan = true; render(); },
   'noop': () => {},
-  'close-modal': () => { state.showAddPlan = false; state.showAddTask = false; render(); },
+  'close-modal': () => {
+    state.showAddPlan = false; state.showAddTask = false;
+    state.convertingIdeaId = null; state.editingPlanId = null; state.editingTaskId = null;
+    render();
+  },
+  'undo': () => doUndo(),
+  'edit-plan': (btn) => editPlan(btn.dataset.id),
+  'edit-task': (btn) => editTask(btn.dataset.id),
+  'toggle-pause': (btn) => togglePause(btn.dataset.id),
+  'idea-to-task': (btn) => ideaToTask(btn.dataset.id),
+
+  'open-capture': () => { ideaDraft = ''; state.showCapture = true; render(); },
+  'close-capture': () => { state.showCapture = false; render(); },
+  'save-idea': () => addIdea(),
+  'idea-to-plan': (btn) => ideaToPlan(btn.dataset.id),
+  'delete-idea': (btn) => deleteIdea(btn.dataset.id),
 
   'open-backup': () => { state.showBackup = true; render(); requestPersistence().then(render); },
   'close-backup': () => { state.showBackup = false; render(); },
@@ -789,7 +1146,7 @@ const handlers = {
   'confirm-delete-plan': (btn) => deletePlan(btn.dataset.id),
   'log-amount': (btn) => logAmount(btn.dataset.id, Number(btn.dataset.amount)),
 
-  'open-add-task': () => { taskDraft = { ...freshTaskDraft(state.selectedDayKey), __init:true }; state.showAddTask = true; render(); },
+  'open-add-task': () => { state.editingTaskId = null; state.convertingIdeaId = null; taskDraft = { ...freshTaskDraft(state.selectedDayKey), __init:true }; state.showAddTask = true; render(); },
   'set-task-field': (btn) => { taskDraft[btn.dataset.field] = btn.dataset.value; render(); },
   'toggle-task-weekday': (btn) => {
     const v = Number(btn.dataset.value);
@@ -818,8 +1175,17 @@ document.addEventListener('click', (e) => {
 
 document.addEventListener('input', (e) => {
   const el = e.target;
-  if (el.dataset && el.dataset.draft === 'plan') planDraft[el.dataset.field] = el.value;
+  if (el.dataset && el.dataset.draft === 'idea') ideaDraft = el.value;
+  else if (el.dataset && el.dataset.draft === 'plan') planDraft[el.dataset.field] = el.value;
   else if (el.dataset && el.dataset.draft === 'task') taskDraft[el.dataset.field] = el.value;
+});
+
+// Fikr oynasida Enter - saqlash, Shift+Enter - yangi qator
+document.addEventListener('keydown', (e) => {
+  if (e.target && e.target.id === 'f-idea-text' && e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    addIdea();
+  }
 });
 
 // Zaxira faylni o'qish
