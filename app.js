@@ -130,6 +130,7 @@ let state = {
   convertingIdeaId: null,
   editingPlanId: null,
   editingTaskId: null,
+  editingIdeaId: null,
   undo: null,
   storagePersisted: null,
   pulses: {},
@@ -417,12 +418,33 @@ function addIdea(){
   const el = document.getElementById('f-idea-text');
   const text = ((el && el.value) || ideaDraft || '').trim();
   if (!text) return;
+
+  if (state.editingIdeaId){
+    state.ideas = state.ideas.map(i => i.id !== state.editingIdeaId ? i : { ...i, text, editedAt: Date.now() });
+    persistIdeas();
+    ideaDraft = '';
+    state.editingIdeaId = null;
+    state.showCapture = false;
+    render();
+    toast("O'zgartirildi");
+    return;
+  }
+
   state.ideas.unshift({ id: uid(), text, createdAt: Date.now() });
   persistIdeas();
   ideaDraft = '';
   state.showCapture = false;
   render();
   toast('Yozib olindi');
+}
+
+function editIdea(id){
+  const it = state.ideas.find(i => i.id === id);
+  if (!it) return;
+  ideaDraft = it.text;
+  state.editingIdeaId = id;
+  state.showCapture = true;
+  render();
 }
 
 function deleteIdea(id){
@@ -756,8 +778,9 @@ function renderIdeaCard(it){
     <div class="rp-idea">
       <div class="rp-idea-text">${esc(it.text).replace(/\n/g,'<br>')}</div>
       <div class="rp-idea-foot">
-        <span class="rp-idea-date">${agoUz(it.createdAt || Date.now())}</span>
+        <span class="rp-idea-date">${agoUz(it.createdAt || Date.now())}${it.editedAt?' &middot; tahrirlangan':''}</span>
         <div class="rp-idea-actions">
+          <button class="rp-idea-btn" data-action="edit-idea" data-id="${it.id}" aria-label="Tahrirlash">&#9998;</button>
           <button class="rp-idea-btn" data-action="idea-to-task" data-id="${it.id}">Vazifa qil</button>
           <button class="rp-idea-btn rp-idea-btn-main" data-action="idea-to-plan" data-id="${it.id}">Reja qil</button>
           <button class="rp-idea-btn" data-action="delete-idea" data-id="${it.id}" aria-label="O'chirish">&#10005;</button>
@@ -775,9 +798,9 @@ function renderCaptureModal(){
   return `
     <div class="rp-modal-overlay" data-action="close-capture">
       <div class="rp-modal rp-modal-capture" data-action="noop">
-        <div class="rp-modal-header"><span>Fikr</span><button class="rp-icon-btn" data-action="close-capture">&#10005;</button></div>
+        <div class="rp-modal-header"><span>${state.editingIdeaId?'Fikrni tahrirlash':'Fikr'}</span><button class="rp-icon-btn" data-action="close-capture">&#10005;</button></div>
         <textarea id="f-idea-text" class="rp-idea-input" data-draft="idea" rows="3" placeholder="Xayolga kelgan narsani yozing...">${esc(ideaDraft)}</textarea>
-        <button class="rp-save-btn" data-action="save-idea">Saqlash</button>
+        <button class="rp-save-btn" data-action="save-idea">${state.editingIdeaId?"O'zgarishni saqlash":'Saqlash'}</button>
         <p class="rp-note rp-note-small">Enter \u2014 saqlash, Shift+Enter \u2014 yangi qator</p>
       </div>
     </div>`;
@@ -1127,8 +1150,9 @@ const handlers = {
   'toggle-pause': (btn) => togglePause(btn.dataset.id),
   'idea-to-task': (btn) => ideaToTask(btn.dataset.id),
 
-  'open-capture': () => { ideaDraft = ''; state.showCapture = true; render(); },
-  'close-capture': () => { state.showCapture = false; render(); },
+  'open-capture': () => { ideaDraft = ''; state.editingIdeaId = null; state.showCapture = true; render(); },
+  'close-capture': () => { state.showCapture = false; state.editingIdeaId = null; ideaDraft = ''; render(); },
+  'edit-idea': (btn) => editIdea(btn.dataset.id),
   'save-idea': () => addIdea(),
   'idea-to-plan': (btn) => ideaToPlan(btn.dataset.id),
   'delete-idea': (btn) => deleteIdea(btn.dataset.id),

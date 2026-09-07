@@ -224,3 +224,6 @@ body {
 
 .rp-undo { position:fixed; left:50%; transform:translateX(-50%); bottom:92px; display:flex; align-items:center; gap:14px; background:#3A2A1C; color:#FBF3E4; font-size:13px; padding:10px 14px 10px 16px; border-radius:12px; max-width:88vw; z-index:60; box-shadow:0 8px 24px rgba(43,31,20,0.3); animation: rp-fade .2s ease; }
 .rp-undo-btn { background:none; border:none; color:#E8B85C; font-family:'Fraunces',serif; font-weight:600; font-size:13px; cursor:pointer; padding:2px 0; white-space:nowrap; }
+
+.rp-idea-actions { flex-wrap:wrap; justify-content:flex-end; }
+.rp-idea-foot { flex-wrap:wrap; }
