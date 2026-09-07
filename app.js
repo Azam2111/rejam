@@ -28,15 +28,73 @@ function catOf(id){ return CATS.find(c=>c.id===id) || CATS[CATS.length-1]; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 
 // Pauzada o'tgan kunlar soni (yig'ilgan + hozir davom etayotgani)
-function pausedDaysOf(plan, today){
-  let d = Number(plan.pauseDays || 0);
-  if (plan.paused && plan.pausedAt) {
-    d += Math.max(daysBetween(parseKey(plan.pausedAt), today), 0);
+// ==================== Pauza oraliqlari ====================
+// Interval semantikasi: startDate - pauza boshlangan kun (pauza kuni hisoblanadi),
+// endDate  - reja qayta faollashgan kun (pauza kuniga KIRMAYDI).
+// endDate null bo'lsa pauza hozir davom etyapti - bugun ham pauza kuni.
+
+function mergeIntervals(list){
+  const arr = list.slice().sort((a,b) => a.s < b.s ? -1 : a.s > b.s ? 1 : 0);
+  const out = [];
+  for (const iv of arr) {
+    const last = out[out.length-1];
+    if (last && iv.s <= addDays(parseKey(last.e), 1) && parseKey(iv.s) <= addDays(parseKey(last.e), 1)) {
+      if (iv.e > last.e) last.e = iv.e;
+    } else out.push({ s: iv.s, e: iv.e });
   }
-  return d;
+  return out;
 }
 
-// Ketma-ketlik: bugun (yoki kecha) bilan tugaydigan uzluksiz kunlar
+// Pauza kunlarini [rangeStart, rangeEnd] oralig'ida sanaydi (ikkalasi ham inklyuziv)
+function pausedDaysInRange(plan, rangeStart, rangeEnd, today){
+  const todayKey = toKey(today);
+  const raw = (plan.pauseIntervals || []).map(iv => ({
+    s: iv.startDate,
+    e: iv.endDate ? toKey(addDays(parseKey(iv.endDate), -1)) : todayKey,   // endDate faol kun
+  })).filter(iv => iv.e >= iv.s);
+
+  const merged = mergeIntervals(raw);
+  const a = toKey(rangeStart), b = toKey(rangeEnd);
+  if (b < a) return 0;
+
+  let total = 0;
+  for (const iv of merged) {
+    const s = iv.s > a ? iv.s : a;
+    const e = iv.e < b ? iv.e : b;
+    if (e >= s) total += daysBetween(parseKey(s), parseKey(e)) + 1;
+  }
+  // Eski formatdan qolgan yig'ma kunlar (sanasi noma'lum)
+  total += Math.max(0, Number(plan.legacyPauseDays || 0));
+  return total;
+}
+
+function isPausedNow(plan){
+  return (plan.pauseIntervals || []).some(iv => !iv.endDate);
+}
+
+// Berilgan oraliqdagi FAOL (pauzasiz) kunlar soni
+function activeDaysBetween(plan, a, b, today){
+  if (b < a) return 0;
+  const cal = daysBetween(a, b) + 1;
+  return Math.max(0, cal - pausedDaysInRange(plan, a, b, today));
+}
+
+// Pauza muddatni suradi: faol kunlar soni asl muddat bilan teng bo'ladigan sanani topamiz
+function effectiveEndOf(plan, today){
+  const start = parseKey(plan.startDate);
+  const baseEnd = parseKey(plan.endDate);
+  const need = daysBetween(start, baseEnd) + 1;
+  let end = baseEnd;
+  for (let i = 0; i < 8; i++) {
+    const have = activeDaysBetween(plan, start, end, today);
+    const gap = need - have;
+    if (gap <= 0) break;
+    end = addDays(end, gap);
+  }
+  return end;
+}
+
+// ==================== Ketma-ketlik ====================
 function computeStreak(plan, today){
   const log = plan.log || {};
   const has = k => Number(log[k] || 0) > 0;
@@ -55,54 +113,91 @@ function computeStreak(plan, today){
   return { current, best };
 }
 
+// ==================== Statistika ====================
+// Qoidalar:
+//  - startDate..endDate inklyuziv kalendar kunlari
+//  - kutilgan miqdor KECHAGACHA tugagan faol kunlar bo'yicha hisoblanadi
+//  - bugungi me'yor alohida, jamlangan jadval asosida
+//  - reja oralig'idan tashqaridagi loglar progressga KIRMAYDI
+//  - pauza sur'atni pasaytirmaydi, faqat muddatni suradi
 function computeStats(plan, today){
   const start = parseKey(plan.startDate);
-  const pauseDays = pausedDaysOf(plan, today);
   const baseEnd = parseKey(plan.endDate);
-  // Sur'at ASL muddatdan hisoblanadi - pauza uni pasaytirmaydi, faqat muddatni suradi
-  const originalTotalDays = Math.max(daysBetween(start, baseEnd)+1, 1);
-  const rate = plan.target / originalTotalDays;
-  const originalEnd = addDays(baseEnd, pauseDays);
-  const totalDone = Object.values(plan.log||{}).reduce((s,v)=>s+Number(v||0),0);
+  const target = Number(plan.target);
+  const originalTotalDays = Math.max(daysBetween(start, baseEnd) + 1, 1);
+  const rate = target / originalTotalDays;
 
-  const daysPassedRaw = daysBetween(start, today)+1-pauseDays;
-  const daysPassedForPace = Math.min(Math.max(daysPassedRaw,0), originalTotalDays);
-  const expectedByNow = daysPassedForPace*rate;
+  const dynamicEndBase = effectiveEndOf(plan, today);
+  const paused = isPausedNow(plan);
+  const pauseDays = pausedDaysInRange(plan, start, today < dynamicEndBase ? today : dynamicEndBase, today);
+
+  // --- Loglarni oraliq ichi / tashqarisiga ajratamiz ---
+  const log = plan.log || {};
+  let totalDone = 0, outsideDone = 0, doneToday = 0;
+  const startKey = plan.startDate, todayKey = toKey(today);
+  for (const k of Object.keys(log)) {
+    const v = Number(log[k]);
+    if (!Number.isFinite(v) || v <= 0) continue;
+    if (k < startKey) { outsideDone += v; continue; }
+    totalDone += v;                       // tugash sanasidan keyingi ish ham hisobga olinadi
+    if (k === todayKey) doneToday += v;
+  }
+
+  const notStarted = today < start;
+  const remaining = Math.max(target - totalDone, 0);
+  const isComplete = remaining <= 0;
+
+  // --- Kutilgan miqdor: KECHAGACHA tugagan faol kunlar ---
+  let activeElapsed = 0;
+  if (!notStarted) {
+    const yesterday = addDays(today, -1);
+    const upto = yesterday < dynamicEndBase ? yesterday : dynamicEndBase;
+    activeElapsed = Math.min(activeDaysBetween(plan, start, upto, today), originalTotalDays);
+  }
+  const expectedByNow = activeElapsed * rate;
   const paceDiff = totalDone - expectedByNow;
 
-  let dynamicEnd = originalEnd;
-  let extraDays = 0;
-  if (plan.mode === 'extend'){
-    const daysPassedFull = Math.max(daysPassedRaw, 0);
-    const expectedAlways = daysPassedFull*rate;
-    const deficit = expectedAlways - totalDone;
-    if (deficit > 0.001){
-      extraDays = Math.ceil(deficit/rate);
-      dynamicEnd = addDays(originalEnd, extraDays);
+  // --- extend rejimi: kamomad ham faqat tugagan kunlar bo'yicha ---
+  let dynamicEnd = dynamicEndBase, extraDays = 0;
+  if (plan.mode === 'extend' && !isComplete) {
+    const deficit = expectedByNow - totalDone;
+    if (deficit > 1e-9 && rate > 0) {
+      extraDays = Math.ceil(deficit / rate - 1e-9);
+      dynamicEnd = addDays(dynamicEndBase, extraDays);
     }
   }
 
-  const remaining = Math.max(plan.target-totalDone, 0);
-  const daysRemaining = Math.max(daysBetween(today, dynamicEnd)+1, 1);
-  const dailyTargetRaw = remaining>0 ? remaining/daysRemaining : 0;
-  const dailyTargetDisplay = remaining>0 ? Math.max(1, Math.ceil(dailyTargetRaw-1e-9)) : 0;
-  const doneToday = Number((plan.log||{})[toKey(today)] || 0);
-  const isComplete = remaining<=0;
+  // --- Bugungi me'yor: jamlangan jadval (ba'zi kunlar 0 bo'lishi mumkin) ---
+  let dailyTargetDisplay = 0, paceNow = 0;
+  if (!notStarted && !isComplete && !paused) {
+    const from = today > start ? today : start;
+    const activeRemaining = Math.max(activeDaysBetween(plan, from, dynamicEnd, today), 1);
+    paceNow = plan.mode === 'extend' ? rate : remaining / activeRemaining;
+    if (!Number.isFinite(paceNow) || paceNow < 0) paceNow = 0;
+    dailyTargetDisplay = Math.round(paceNow);          // jamlangan jadval: cum(1)-cum(0)
+  }
+
   const isPastDeadline = daysBetween(today, dynamicEnd) < 0 && !isComplete;
 
   let status = 'ontrack';
   if (isComplete) status = 'done';
-  else if (plan.paused) status = 'paused';
+  else if (notStarted) status = 'upcoming';
+  else if (paused) status = 'paused';
   else if (isPastDeadline) status = 'overdue';
-  else if (paceDiff >= rate*0.5) status = 'ahead';
-  else if (paceDiff <= -rate*0.5) status = 'behind';
+  else if (paceDiff >= rate * 0.5) status = 'ahead';
+  else if (paceDiff <= -rate * 0.5) status = 'behind';
+
+  const progressPct = target > 0 ? Math.min((totalDone / target) * 100, 100) : 0;
+  const expectedPct = target > 0 ? Math.min((expectedByNow / target) * 100, 100) : 0;
 
   return {
-    totalDone, remaining, dailyTargetDisplay, doneToday, dynamicEnd, extraDays,
-    isComplete, isPastDeadline, status, pauseDays,
-    progressPct: Math.min((totalDone/plan.target)*100, 100),
-    expectedPct: Math.min((expectedByNow/plan.target)*100, 100),
-    originalTotalDays, rate,
+    totalDone, outsideDone, remaining, dailyTargetDisplay, doneToday,
+    dynamicEnd, extraDays, isComplete, isPastDeadline, notStarted, paused,
+    status, pauseDays, paceNow,
+    progressPct: Number.isFinite(progressPct) ? progressPct : 0,
+    expectedPct: Number.isFinite(expectedPct) ? expectedPct : 0,
+    originalTotalDays, rate: Number.isFinite(rate) ? rate : 0,
+    daysUntilStart: notStarted ? daysBetween(today, start) : 0,
   };
 }
 
@@ -113,6 +208,7 @@ const STATUS_META = {
   overdue:{ label: "Muddat o'tdi", color: '#B75B3D' },
   done:   { label: 'Bajarildi', color: '#7A8F5C' },
   paused: { label: 'Pauzada', color: '#A08F76' },
+  upcoming:{ label: 'Boshlanmagan', color: '#A08F76' },
 };
 
 // ==================== State ====================
@@ -132,6 +228,9 @@ let state = {
   readErrors: [],
   importPreview: null,
   canRevertImport: false,
+  editWarning: null,
+  confirmEdit: false,
+  pendingPlanEdit: null,
   showCapture: false,
   convertingIdeaId: null,
   editingPlanId: null,
@@ -253,6 +352,16 @@ function cleanPauseIntervals(raw, issues){
   return out.sort((a, b) => a.startDate < b.startDate ? -1 : 1);
 }
 
+// Eski {paused, pausedAt, pauseDays} -> yangi pauseIntervals
+function migratePause(raw, issues){
+  const ivs = cleanPauseIntervals(raw.pauseIntervals, issues);
+  if (ivs.length) return ivs;
+  if (raw.paused && isValidDateKey(raw.pausedAt)) {
+    return [{ startDate: raw.pausedAt, endDate: null }];
+  }
+  return [];
+}
+
 function validatePlan(raw, seen, issues){
   if (!raw || typeof raw !== 'object') { issues.push('Reja: obyekt emas, tashlandi'); return null; }
   const name = cleanText(raw.name, 300).trim();
@@ -262,6 +371,7 @@ function validatePlan(raw, seen, issues){
   if (!isValidDateKey(raw.startDate) || !isValidDateKey(raw.endDate)) { issues.push(`Reja "${name}": sana yaroqsiz, tashlandi`); return null; }
   if (raw.endDate < raw.startDate) { issues.push(`Reja "${name}": tugash sanasi boshlanishdan oldin, tashlandi`); return null; }
   const createdAt = finiteNum(raw.createdAt);
+  const legacyDays = Math.max(0, finiteNum(raw.legacyPauseDays) || finiteNum(raw.pauseDays) || 0);
   return {
     id: cleanId(raw.id, seen, issues, `Reja "${name}"`),
     name,
@@ -274,8 +384,8 @@ function validatePlan(raw, seen, issues){
     why: cleanText(raw.why, 2000),
     log: cleanLogMap(raw.log, issues, `Reja "${name}"`),
     createdAt: createdAt === null ? Date.now() : createdAt,
-    pauseIntervals: cleanPauseIntervals(raw.pauseIntervals, issues),
-    historyNote: raw.historyNote === true,
+    pauseIntervals: migratePause(raw, issues),
+    legacyPauseDays: legacyDays,
   };
 }
 
@@ -739,13 +849,41 @@ function addPlan(){
   const why = whyEl ? whyEl.value.trim() : '';
   if (!name || !(target>0) || !startDate || !endDate || endDate < startDate) return;
 
+  if (state.editingPlanId && !state.confirmEdit){
+    const old = state.plans.find(p => p.id === state.editingPlanId);
+    if (old) {
+      let lostCount = 0, lostAmount = 0;
+      for (const k of Object.keys(old.log || {})) {
+        const v = Number(old.log[k]) || 0;
+        const wasIn = k >= old.startDate;
+        const willBeIn = k >= startDate;
+        if (wasIn && !willBeIn) { lostCount++; lostAmount += v; }
+      }
+      if (lostCount > 0) {
+        state.editWarning = { count: lostCount, amount: Math.round(lostAmount*10)/10, unit };
+        state.pendingPlanEdit = {
+          name, target, unit, startDate, endDate, why,
+          category: planDraft.category, mode: planDraft.mode,
+        };
+        render();
+        return;
+      }
+    }
+  }
+
   if (state.editingPlanId){
+    const v = state.confirmEdit && state.pendingPlanEdit
+      ? state.pendingPlanEdit
+      : { name, target, unit, startDate, endDate, why, category: planDraft.category, mode: planDraft.mode };
     state.plans = state.plans.map(p => p.id !== state.editingPlanId ? p : {
-      ...p, name, category: planDraft.category, target, unit, startDate, endDate,
-      mode: planDraft.mode, why,
+      ...p, name: v.name, category: v.category, target: v.target, unit: v.unit,
+      startDate: v.startDate, endDate: v.endDate, mode: v.mode, why: v.why,
     });
     persistPlans();
     state.editingPlanId = null;
+    state.confirmEdit = false;
+    state.editWarning = null;
+    state.pendingPlanEdit = null;
     state.showAddPlan = false;
     render();
     toast("O'zgartirildi");
@@ -837,13 +975,19 @@ function ideaToPlan(id){
   render();
 }
 
+// Kalendar kunlari farqi - timestamp/86400000 emas (DST kunida 23 yoki 25 soat bo'ladi)
+function calendarDaysAgo(ts){
+  const then = new Date(ts);
+  if (isNaN(then.getTime())) return 0;
+  return Math.max(0, daysBetween(parseKey(toKey(then)), parseKey(toKey(new Date()))));
+}
 function oldestIdeaDays(){
   if (!state.ideas.length) return 0;
-  const oldest = Math.min(...state.ideas.map(i => i.createdAt || Date.now()));
-  return Math.floor((Date.now() - oldest) / 86400000);
+  const oldest = Math.min(...state.ideas.map(i => Number(i.createdAt) || Date.now()));
+  return calendarDaysAgo(oldest);
 }
 function agoUz(ts){
-  const d = Math.floor((Date.now() - ts) / 86400000);
+  const d = calendarDaysAgo(ts);
   if (d <= 0) return 'bugun';
   if (d === 1) return 'kecha';
   if (d < 30) return d + ' kun oldin';
@@ -868,11 +1012,11 @@ function togglePause(id){
   const todayKey = toKey(new Date());
   state.plans = state.plans.map(p => {
     if (p.id !== id) return p;
-    if (p.paused){
-      const add = p.pausedAt ? Math.max(daysBetween(parseKey(p.pausedAt), new Date()), 0) : 0;
-      return { ...p, paused:false, pausedAt:null, pauseDays: Number(p.pauseDays||0) + add };
-    }
-    return { ...p, paused:true, pausedAt: todayKey };
+    const ivs = (p.pauseIntervals || []).map(x => ({ ...x }));
+    const open = ivs.find(x => !x.endDate);
+    if (open) { open.endDate = todayKey; }          // bugundan yana faol
+    else { ivs.push({ startDate: todayKey, endDate: null }); }
+    return { ...p, pauseIntervals: ivs };
   });
   persistPlans();
   render();
@@ -1047,7 +1191,7 @@ function renderHeader(today){
 function renderBackupNudge(){
   if (state.plans.length === 0 && state.tasks.length === 0) return '';
   const last = lastExportAt();
-  const days = last ? Math.floor((Date.now() - last) / 86400000) : 999;
+  const days = last ? calendarDaysAgo(last) : 999;
   if (days < 14) return '';
   const txt = last
     ? `Oxirgi zaxiradan beri ${days} kun o'tdi.`
@@ -1246,13 +1390,16 @@ function renderPlanCard(plan, today){
   const isNew = !knownPlanIds.has(plan.id);
 
   const streak = computeStreak(plan, today);
-  const streakChip = (!plan.paused && streak.current >= 2)
+  const streakChip = (!stats.paused && streak.current >= 2)
     ? `<div class="rp-streak">&#128293; ${streak.current} kun ketma-ket</div>` : '';
 
-  const todayRow = plan.paused ? `
+  const todayRow = stats.paused ? `
     <div class="rp-paused-row">
       <div class="rp-paused-text">Pauzada &mdash; sur'at hisobi to'xtatilgan${stats.pauseDays>0?` (${stats.pauseDays} kun)`:''}</div>
       <button class="rp-resume-btn" data-action="toggle-pause" data-id="${esc(plan.id)}">Davom ettirish</button>
+    </div>` : stats.notStarted ? `
+    <div class="rp-paused-row">
+      <div class="rp-paused-text">${fmtUz(parseKey(plan.startDate))} kuni boshlanadi${stats.daysUntilStart>0?` &mdash; ${stats.daysUntilStart} kun qoldi`:''}</div>
     </div>` : !stats.isComplete ? `
     <div class="rp-today-row">
       <div class="rp-today-label">
@@ -1272,10 +1419,11 @@ function renderPlanCard(plan, today){
     <div class="rp-expanded">
       ${renderHistory(plan, today, cat.color)}
       <div class="rp-expanded-meta">${fmtUz(parseKey(plan.startDate))} — ${fmtUz(stats.dynamicEnd)} · kuniga ~${Math.round(stats.rate*10)/10} ${esc(plan.unit)}${streak.best>1?` · rekord ${streak.best} kun`:''}</div>
+      ${stats.outsideDone>0?`<div class="rp-outside-note">Reja boshlanishidan oldingi ${Math.round(stats.outsideDone*10)/10} ${esc(plan.unit)} progressga kirmaydi</div>`:''}
       ${plan.why ? `<div class="rp-why">${esc(plan.why).replace(/\n/g,'<br>')}</div>` : ''}
       <div class="rp-card-tools">
         <button class="rp-link-btn" data-action="edit-plan" data-id="${esc(plan.id)}">&#9998; Tahrirlash</button>
-        <button class="rp-link-btn" data-action="toggle-pause" data-id="${esc(plan.id)}">${plan.paused?'&#9654; Davom ettirish':'&#10073;&#10073; Pauza'}</button>
+        <button class="rp-link-btn" data-action="toggle-pause" data-id="${esc(plan.id)}">${stats.paused?'&#9654; Davom ettirish':'&#10073;&#10073; Pauza'}</button>
       </div>
       ${state.confirmDeleteId===plan.id ? `
         <div class="rp-confirm-row">
@@ -1355,6 +1503,16 @@ function renderAddPlanModal(today){
         <label class="rp-field"><span>Nega bu reja? (ixtiyoriy)</span>
           <textarea id="f-plan-why" class="rp-why-input" data-draft="plan" data-field="why" rows="2" placeholder="Ishtiyoq so'nganda o'zingizga eslatadigan satr">${esc(d.why||'')}</textarea>
         </label>
+        ${state.editWarning ? `
+          <div class="rp-import-box rp-import-bad">
+            <div class="rp-import-title">Diqqat</div>
+            <div class="rp-import-msg">Yangi oraliqdan tashqarida <b>${state.editWarning.count} kunlik</b> yozuv qoladi
+              (jami ${state.editWarning.amount} ${esc(state.editWarning.unit)}). U o'chmaydi, lekin bu rejaning progressiga kirmaydi.</div>
+            <div class="rp-import-actions">
+              <button class="rp-save-btn" data-action="force-save-plan">Baribir saqlash</button>
+              <button class="rp-link-btn" data-action="dismiss-edit-warning">Bekor qilish</button>
+            </div>
+          </div>` : ''}
         <button class="rp-save-btn" data-action="save-plan">${state.editingPlanId?"O'zgarishlarni saqlash":'Rejani saqlash'}</button>
       </div>
     </div>`;
@@ -1454,91 +1612,204 @@ function renderAddTaskModal(){
 }
 
 // ---------- Hisobot ----------
-function renderReportsTab(today){
-  const inUse = CATS.filter(c => state.plans.some(p=>p.category===c.id) || state.tasks.some(t=>(t.category||'boshqa')===c.id));
-  if (inUse.length===0) return `<div class="rp-empty">Hali hisobot uchun ma'lumot yo'q. Avval reja yoki vazifa qo'shing.</div>`;
+// Qoidalar:
+//  - turli o'lchov birliklari HECH QACHON qo'shilmaydi
+//  - vazifa soni raqamli reja miqdoriga qo'shilmaydi
+//  - "umumiy bajarilish" va "oxirgi N kun" alohida ko'rsatkichlar
+//  - vazifa maxraji faqat u mavjud bo'lgan kunlardan boshlanadi
+//  - bugungi tugamagan vazifa "o'tkazib yuborilgan" deb sanalmaydi
 
+function numericGroups(range, today){
+  const map = new Map();
+  for (const p of state.plans) {
+    const unit = p.unit || 'ta';
+    const key = p.category + '|' + unit;
+    if (!map.has(key)) map.set(key, { cat: catOf(p.category), unit, plans: [] });
+    map.get(key).plans.push(p);
+  }
+  const out = [];
+  for (const g of map.values()) {
+    let targetSum = 0, doneAll = 0, doneWindow = 0;
+    const perDay = range.map(() => 0);
+    for (const p of g.plans) {
+      const st = computeStats(p, today);
+      const tg = Number(p.target);
+      if (Number.isFinite(tg) && tg > 0) targetSum += tg;
+      doneAll += st.totalDone;
+      range.forEach((d, i) => {
+        const k = toKey(d);
+        if (k < p.startDate) return;                 // reja oralig'idan oldingi kun
+        const v = Number((p.log || {})[k]);
+        if (Number.isFinite(v) && v > 0) { perDay[i] += v; doneWindow += v; }
+      });
+    }
+    const preWindow = Math.max(0, doneAll - doneWindow);
+    let cum = preWindow;
+    const data = range.map((d, i) => {
+      cum += perDay[i];
+      const pct = targetSum > 0 ? Math.min((cum / targetSum) * 100, 100) : 0;
+      return {
+        label: rangeLabel(d, range.length),
+        amount: perDay[i],
+        pct: Number.isFinite(pct) ? Math.round(pct) : 0,
+      };
+    });
+    out.push({
+      cat: g.cat, unit: g.unit, targetSum, doneAll, doneWindow, preWindow, data,
+      overallPct: targetSum > 0 ? Math.min(Math.round((doneAll / targetSum) * 100), 100) : 0,
+    });
+  }
+  return out;
+}
+
+function taskGroups(range, today){
+  const todayKey = toKey(today);
+  const map = new Map();
+  for (const t of state.tasks) {
+    const cid = (t.category || 'boshqa');
+    if (!map.has(cid)) map.set(cid, { cat: catOf(cid), tasks: [] });
+    map.get(cid).tasks.push(t);
+  }
+  const out = [];
+  for (const g of map.values()) {
+    let scheduled = 0, done = 0;
+    const data = range.map(d => {
+      const k = toKey(d), wIdx = weekdayIdx(d);
+      let daySched = 0, dayDone = 0;
+      if (k <= todayKey) {
+        for (const t of g.tasks) {
+          const from = t.effectiveFrom || toKey(new Date(t.createdAt || Date.now()));
+          if (k < from) continue;                      // vazifa hali mavjud emas edi
+          const isSched = t.type === 'weekly' ? (t.weekdays || []).includes(wIdx) : t.date === k;
+          if (!isSched) continue;
+          const isDone = !!(t.completions || {})[k];
+          if (k === todayKey && !isDone) continue;      // bugun hali kutilmoqda
+          daySched++; if (isDone) dayDone++;
+        }
+      }
+      scheduled += daySched; done += dayDone;
+      const pct = scheduled > 0 ? (done / scheduled) * 100 : 0;
+      return { label: rangeLabel(d, range.length), amount: dayDone, pct: Math.round(pct) };
+    });
+    let pendingToday = 0;
+    for (const t of g.tasks) {
+      const from = t.effectiveFrom || toKey(new Date(t.createdAt || Date.now()));
+      if (todayKey < from) continue;
+      const isSched = t.type === 'weekly' ? (t.weekdays || []).includes(weekdayIdx(today)) : t.date === todayKey;
+      if (isSched && !(t.completions || {})[todayKey]) pendingToday++;
+    }
+    if (scheduled > 0 || pendingToday > 0) out.push({ cat: g.cat, scheduled, done, pendingToday, data });
+  }
+  return out;
+}
+
+function rangeLabel(d, len){
+  return len <= 7 ? WEEKDAYS_SHORT[weekdayIdx(d)] : String(d.getDate());
+}
+
+function renderReportsTab(today){
   const period = state.reportPeriod;
-  const days = period==='week' ? 7 : 30;
+  const days = period === 'week' ? 7 : 30;
   const range = lastNDays(days, today);
+
+  const nums = numericGroups(range, today);
+  const tsks = taskGroups(range, today);
 
   const periodRow = `<div class="rp-period-row">
     <button class="rp-period-btn${period==='week'?' rp-period-active':''}" data-action="set-period" data-period="week">Haftalik</button>
     <button class="rp-period-btn${period==='month'?' rp-period-active':''}" data-action="set-period" data-period="month">Oylik</button>
   </div>`;
 
-  const cards = inUse.map(cat => renderCategoryReport(cat, range, period)).join('');
-  return `${periodRow}<div class="rp-report-list">${cards}</div>`;
+  if (!nums.length && !tsks.length) {
+    return `${periodRow}<div class="rp-empty">Hali hisobot uchun ma'lumot yo'q. Avval reja yoki vazifa qo'shing.</div>`;
+  }
+
+  const windowLabel = period === 'week' ? 'Oxirgi 7 kun' : 'Oxirgi 30 kun';
+  return `${periodRow}<div class="rp-report-list">
+    ${nums.map(g => renderNumericReport(g, windowLabel, period)).join('')}
+    ${tsks.map(g => renderTaskReport(g, windowLabel, period)).join('')}
+  </div>`;
 }
 
-function renderCategoryReport(cat, range, period){
-  const plans = state.plans.filter(p=>p.category===cat.id);
-  const tasks = state.tasks.filter(t=>(t.category||'boshqa')===cat.id);
-  const targetSum = plans.reduce((s,p)=>s+Number(p.target||0),0);
-  const unit = plans[0]?.unit || 'ta';
-
-  let cumPlan=0, cumDone=0, cumTotal=0, periodPlanTotal=0, periodTaskDone=0, periodTaskTotal=0;
-  const data = range.map(d => {
-    const key = toKey(d);
-    const wIdx = weekdayIdx(d);
-    const planAmount = plans.reduce((s,p)=> s + Number((p.log||{})[key]||0), 0);
-    const scheduled = tasks.filter(t => t.type==='weekly' ? t.weekdays.includes(wIdx) : t.date===key);
-    const doneTasks = scheduled.filter(t => t.completions && t.completions[key]).length;
-    cumPlan += planAmount; cumDone += doneTasks; cumTotal += scheduled.length;
-    periodPlanTotal += planAmount; periodTaskDone += doneTasks; periodTaskTotal += scheduled.length;
-    let pct = 0;
-    if (targetSum>0) pct = Math.min((cumPlan/targetSum)*100, 100);
-    else if (cumTotal>0) pct = Math.min((cumDone/cumTotal)*100, 100);
-    return { label: period==='week' ? WEEKDAYS_SHORT[wIdx] : String(d.getDate()), amount: planAmount+doneTasks, pct: Math.round(pct) };
-  });
-  const latestPct = data.length ? data[data.length-1].pct : 0;
-
-  const statsLine = [
-    targetSum>0 ? `${Math.round(periodPlanTotal*10)/10} ${esc(unit)} qo'shildi` : '',
-    periodTaskTotal>0 ? `${periodTaskDone}/${periodTaskTotal} vazifa bajarildi` : '',
-  ].filter(Boolean).map(s=>`<span>${s}</span>`).join('');
-
+function renderNumericReport(g, windowLabel, period){
+  const r1 = Math.round(g.doneAll * 10) / 10;
+  const r2 = Math.round(g.doneWindow * 10) / 10;
   return `
     <div class="rp-card rp-report-card">
       <div class="rp-report-head">
-        <div class="rp-cat-dot" style="background:${esc(cat.color)}"></div>
-        <div class="rp-card-name">${cat.label}</div>
-        <div class="rp-report-pct" style="color:${cat.color}">${latestPct}%</div>
+        <div class="rp-cat-dot" style="background:${esc(g.cat.color)}"></div>
+        <div class="rp-card-name">${g.cat.label} &middot; ${esc(g.unit)}</div>
+        <div class="rp-report-pct" style="color:${esc(g.cat.color)}">${g.overallPct}%</div>
       </div>
-      <div style="margin-top:10px">${renderChartSvg(data, cat.color, period)}</div>
-      <div class="rp-report-stats">${statsLine}</div>
+      <div class="rp-metric-row">
+        <div class="rp-metric"><span>Umumiy bajarilish</span><b>${r1} / ${g.targetSum} ${esc(g.unit)}</b></div>
+        <div class="rp-metric"><span>${windowLabel}</span><b>+${r2} ${esc(g.unit)}</b></div>
+      </div>
+      <div style="margin-top:10px">${renderChartSvg(g.data, g.cat.color, period)}</div>
+      <div class="rp-chart-legend">
+        <span><i class="rp-lg-bar" style="background:${esc(g.cat.color)}"></i> kunlik ${esc(g.unit)}</span>
+        <span><i class="rp-lg-line" style="background:${esc(g.cat.color)}"></i> jamlangan bajarilish %</span>
+      </div>
     </div>`;
 }
 
-function renderChartSvg(data, color, period){
+function renderTaskReport(g, windowLabel, period){
+  const pct = g.scheduled > 0 ? Math.round((g.done / g.scheduled) * 100) : 0;
+  return `
+    <div class="rp-card rp-report-card">
+      <div class="rp-report-head">
+        <div class="rp-cat-dot" style="background:${esc(g.cat.color)}"></div>
+        <div class="rp-card-name">${g.cat.label} &middot; vazifalar</div>
+        <div class="rp-report-pct" style="color:${esc(g.cat.color)}">${pct}%</div>
+      </div>
+      <div class="rp-metric-row">
+        <div class="rp-metric"><span>${windowLabel}</span><b>${g.done} / ${g.scheduled} bajarildi</b></div>
+        ${g.pendingToday > 0 ? `<div class="rp-metric"><span>Bugun kutilmoqda</span><b>${g.pendingToday} ta</b></div>` : ''}
+      </div>
+      <div style="margin-top:10px">${renderChartSvg(g.data, g.cat.color, period)}</div>
+      <div class="rp-chart-legend">
+        <span><i class="rp-lg-bar" style="background:${esc(g.cat.color)}"></i> kunlik bajarilgan</span>
+        <span><i class="rp-lg-line" style="background:${esc(g.cat.color)}"></i> jamlangan foiz</span>
+      </div>
+    </div>`;
+}
+
+// Sof renderer: biznes hisobi yo'q, faqat chizadi. Yaroqsiz sonlar koordinataga tushmaydi.
+function renderChartSvg(rawData, color, period){
+  const data = (rawData || []).map(d => ({
+    label: String(d && d.label != null ? d.label : ''),
+    amount: Number.isFinite(Number(d && d.amount)) ? Math.max(0, Number(d.amount)) : 0,
+    pct: Number.isFinite(Number(d && d.pct)) ? Math.min(100, Math.max(0, Number(d.pct))) : 0,
+  }));
+  if (!data.length) return `<div class="rp-chart-empty">Ma'lumot yo'q</div>`;
+
   const W = 320, H = 130, padBottom = 18;
-  const maxAmount = Math.max(1, ...data.map(d=>d.amount));
-  const gap = W/data.length;
-  const barW = Math.max(2, gap*0.55);
-  const showLabelEvery = period==='month' ? 5 : 1;
+  const maxAmount = Math.max(1, ...data.map(d => d.amount));
+  const gap = W / data.length;
+  const barW = Math.max(2, gap * 0.55);
+  const showLabelEvery = data.length > 10 ? 5 : 1;
 
   let bars = '', labels = '', points = '';
-  data.forEach((d,i) => {
-    const h = (d.amount/maxAmount) * (H-padBottom-6);
-    const x = i*gap + (gap-barW)/2;
-    const y = H-padBottom-h;
-    bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${color}" fill-opacity="0.28"/>`;
-    const px = i*gap + gap/2;
-    const py = H-padBottom - (d.pct/100)*(H-padBottom-6);
+  data.forEach((d, i) => {
+    const h = (d.amount / maxAmount) * (H - padBottom - 6);
+    const x = i * gap + (gap - barW) / 2;
+    const y = H - padBottom - h;
+    bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${esc(color)}" fill-opacity="0.28"/>`;
+    const px = i * gap + gap / 2;
+    const py = H - padBottom - (d.pct / 100) * (H - padBottom - 6);
     points += `${px.toFixed(1)},${py.toFixed(1)} `;
     if (i % showLabelEvery === 0){
       labels += `<text x="${px.toFixed(1)}" y="${H-4}" font-size="9" fill="#A08F76" text-anchor="middle">${esc(d.label)}</text>`;
     }
   });
 
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="130" preserveAspectRatio="none">
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="130" preserveAspectRatio="none" role="img">
     ${bars}
-    <polyline points="${points.trim()}" fill="none" stroke="${color}" stroke-width="2"/>
+    <polyline points="${points.trim()}" fill="none" stroke="${esc(color)}" stroke-width="2"/>
     ${labels}
   </svg>`;
 }
 
-// ==================== Event delegation ====================
 const handlers = {
   'set-tab': (btn) => { state.tab = btn.dataset.tab; render(); },
   'plan-tomorrow': () => {
@@ -1553,6 +1824,7 @@ const handlers = {
   'close-modal': () => {
     state.showAddPlan = false; state.showAddTask = false;
     state.convertingIdeaId = null; state.editingPlanId = null; state.editingTaskId = null;
+    state.editWarning = null; state.confirmEdit = false; state.pendingPlanEdit = null;
     render();
   },
   'undo': () => doUndo(),
@@ -1579,6 +1851,8 @@ const handlers = {
   'revert-import': () => revertImport(),
   'set-plan-field': (btn) => { planDraft[btn.dataset.field] = btn.dataset.value; render(); },
   'save-plan': () => addPlan(),
+  'force-save-plan': () => { state.confirmEdit = true; addPlan(); },
+  'dismiss-edit-warning': () => { state.editWarning = null; state.confirmEdit = false; state.pendingPlanEdit = null; render(); },
   'expand-plan': (btn) => { const id=btn.dataset.id; state.expandedPlanId = state.expandedPlanId===id ? null : id; render(); },
   'ask-delete-plan': (btn) => { state.confirmDeleteId = btn.dataset.id; render(); },
   'cancel-delete-plan': () => { state.confirmDeleteId = null; render(); },
