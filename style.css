@@ -77,8 +77,8 @@ body {
 .rp-add-btn { width:100%; margin-top:16px; padding:14px; border-radius:14px; border:1px solid #DCCBA9; background:#FFFCF6; color:#3A2A1C; font-family:'Fraunces',serif; font-weight:600; font-size:15px; display:flex; align-items:center; justify-content:center; gap:8px; cursor:pointer; transition: transform .15s cubic-bezier(.34,1.56,.64,1), border-color .2s; }
 .rp-add-btn:active { transform: scale(0.97); border-color:#C08A2E; }
 
-.rp-modal-overlay { position:fixed; inset:0; background:rgba(43,31,20,0.45); display:flex; align-items:flex-end; z-index:50; animation: rp-fade .2s ease; }
-.rp-modal { background:#FFFCF6; width:100%; max-height:88vh; overflow-y:auto; border-radius:22px 22px 0 0; padding:20px 18px 24px; animation: rp-modal-in .4s cubic-bezier(.32,1.4,.6,1) both; }
+.rp-modal-overlay { position:fixed; top:0; left:0; right:0; bottom:auto; height: var(--rp-vh, 100vh); background:rgba(43,31,20,0.45); display:flex; align-items:flex-end; z-index:50; animation: rp-fade .2s ease; }
+.rp-modal { background:#FFFCF6; width:100%; max-height:calc(var(--rp-vh, 100vh) - 24px); overflow-y:auto; border-radius:22px 22px 0 0; padding:20px 18px 24px; animation: rp-modal-in .4s cubic-bezier(.32,1.4,.6,1) both; }
 .rp-modal-header { display:flex; justify-content:space-between; align-items:center; font-family:'Fraunces',serif; font-weight:600; font-size:17px; margin-bottom:16px; color:#3A2A1C; }
 .rp-icon-btn { background:none; border:none; color:#A08F76; cursor:pointer; }
 

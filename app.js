@@ -389,6 +389,57 @@ function validatePlan(raw, seen, issues){
   };
 }
 
+// Jadval tarixi: vazifa qaysi kundan qanday rejalashtirilgani.
+// Usiz hafta kunlarini o'zgartirish o'tmish hisobotini qayta yozib yuboradi.
+function cleanScheduleHistory(raw, current, issues){
+  const out = [];
+  if (Array.isArray(raw)) {
+    for (const h of raw) {
+      if (!h || !isValidDateKey(h.from)) { issues.push('Vazifa: yaroqsiz jadval yozuvi tashlandi'); continue; }
+      const type = h.type === 'weekly' ? 'weekly' : 'once';
+      const weekdays = type === 'weekly' && Array.isArray(h.weekdays)
+        ? [...new Set(h.weekdays.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 6))]
+        : [];
+      if (type === 'weekly' && !weekdays.length) { issues.push('Vazifa: bo\'sh jadval yozuvi tashlandi'); continue; }
+      const date = type === 'once' && isValidDateKey(h.date) ? h.date : null;
+      out.push({ from: h.from, type, weekdays, date });
+    }
+  }
+  if (!out.length) {
+    // Eski ma'lumot: hozirgi jadvalni yaratilish sanasidan boshlab yozamiz
+    out.push({ from: current.effectiveFrom, type: current.type, weekdays: current.weekdays, date: current.date });
+  }
+  out.sort((a,b) => a.from < b.from ? -1 : a.from > b.from ? 1 : 0);
+  // Bir kunda bir nechta yozuv bo'lsa oxirgisi qoladi
+  const dedup = [];
+  for (const h of out) {
+    if (dedup.length && dedup[dedup.length-1].from === h.from) dedup[dedup.length-1] = h;
+    else dedup.push(h);
+  }
+  return dedup;
+}
+
+// Berilgan kunda qaysi jadval amal qilgan
+function scheduleAt(task, dateKey){
+  const hist = (task.scheduleHistory && task.scheduleHistory.length)
+    ? task.scheduleHistory
+    : [{ from: task.effectiveFrom || toKey(new Date(task.createdAt || Date.now())),
+         type: task.type, weekdays: task.weekdays || [], date: task.date }];
+  let cur = null;
+  for (const h of hist) { if (h.from <= dateKey) cur = h; else break; }
+  return cur;
+}
+
+function isScheduledOn(task, dateKey, wIdx){
+  const s = scheduleAt(task, dateKey);
+  if (!s) {
+    // Jadval boshlanishidan oldingi kun. Bir martalik vazifa o'z sanasida baribir ko'rinadi
+    const first = (task.scheduleHistory && task.scheduleHistory[0]) || null;
+    return !!(first && first.type === 'once' && first.date === dateKey);
+  }
+  return s.type === 'weekly' ? (s.weekdays || []).includes(wIdx) : s.date === dateKey;
+}
+
 function validateTask(raw, seen, issues){
   if (!raw || typeof raw !== 'object') { issues.push('Vazifa: obyekt emas, tashlandi'); return null; }
   const text = cleanText(raw.text, 500).trim();
@@ -418,6 +469,7 @@ function validateTask(raw, seen, issues){
     completions: cleanBoolMap(raw.completions),
     createdAt: createdAt === null ? Date.now() : createdAt,
     effectiveFrom,
+    scheduleHistory: cleanScheduleHistory(raw.scheduleHistory, { type, weekdays, date, effectiveFrom }, issues),
   };
 }
 
@@ -1061,10 +1113,22 @@ function addTask(){
   if (taskDraft.type==='once' && !taskDraft.date) return;
   if (taskDraft.type==='weekly' && taskDraft.weekdays.length===0) return;
   if (state.editingTaskId){
-    state.tasks = state.tasks.map(t => t.id !== state.editingTaskId ? t : {
-      ...t, text, category: taskDraft.category, type: taskDraft.type,
-      weekdays: taskDraft.type==='weekly' ? taskDraft.weekdays : [],
-      date: taskDraft.type==='once' ? taskDraft.date : null,
+    const tk = toKey(new Date());
+    const nwd = taskDraft.type==='weekly' ? taskDraft.weekdays.slice().sort((a,b)=>a-b) : [];
+    const ndt = taskDraft.type==='once' ? taskDraft.date : null;
+    state.tasks = state.tasks.map(t => {
+      if (t.id !== state.editingTaskId) return t;
+      const hist = (t.scheduleHistory || []).map(h => ({ ...h }));
+      const last = hist[hist.length-1];
+      const changed = !last || last.type !== taskDraft.type || last.date !== ndt ||
+        (last.weekdays || []).slice().sort((a,b)=>a-b).join(',') !== nwd.join(',');
+      if (changed) {
+        const entry = { from: tk, type: taskDraft.type, weekdays: nwd, date: ndt };
+        if (last && last.from === tk) hist[hist.length-1] = entry;   // bugun ikkinchi marta tahrir
+        else hist.push(entry);
+      }
+      return { ...t, text, category: taskDraft.category, type: taskDraft.type,
+               weekdays: nwd, date: ndt, scheduleHistory: hist };
     });
     persistTasks();
     state.editingTaskId = null;
@@ -1074,11 +1138,14 @@ function addTask(){
     return;
   }
 
+  const todayKey = toKey(new Date());
+  const wd = taskDraft.type==='weekly' ? taskDraft.weekdays : [];
+  const dt = taskDraft.type==='once' ? taskDraft.date : null;
   const newTask = {
     id: uid(), text, category: taskDraft.category, type: taskDraft.type,
-    weekdays: taskDraft.type==='weekly' ? taskDraft.weekdays : [],
-    date: taskDraft.type==='once' ? taskDraft.date : null,
-    completions: {}, createdAt: Date.now(),
+    weekdays: wd, date: dt,
+    completions: {}, createdAt: Date.now(), effectiveFrom: todayKey,
+    scheduleHistory: [{ from: todayKey, type: taskDraft.type, weekdays: wd, date: dt }],
   };
   state.tasks.unshift(newTask);
   persistTasks();
@@ -1171,7 +1238,11 @@ function render(){
   knownTaskIds = new Set(state.tasks.map(t=>t.id));
   if (state.showCapture) {
     const ta = document.getElementById('f-idea-text');
-    if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+    if (ta) {
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      setTimeout(() => { syncViewport(); try { ta.scrollIntoView({ block:'center' }); } catch(e){} }, 300);
+    }
   }
 }
 
@@ -1281,7 +1352,7 @@ function renderBanner(today){
   const tomorrow = addDays(today,1);
   const tKey = toKey(tomorrow);
   const wIdx = weekdayIdx(tomorrow);
-  const hasPlan = state.tasks.some(t => t.type==='weekly' ? t.weekdays.includes(wIdx) : t.date===tKey);
+  const hasPlan = state.tasks.some(t => isScheduledOn(t, tKey, wIdx));
   if (hasPlan) return '';
   return `
     <div class="rp-banner">
@@ -1527,7 +1598,7 @@ function renderDailyTab(){
   const todayKey = toKey(new Date());
   const isToday = state.selectedDayKey === todayKey;
 
-  const dayTasks = state.tasks.filter(t => t.type==='weekly' ? t.weekdays.includes(wIdx) : t.date===state.selectedDayKey);
+  const dayTasks = state.tasks.filter(t => isScheduledOn(t, state.selectedDayKey, wIdx));
   const doneCount = dayTasks.filter(t => t.completions && t.completions[state.selectedDayKey]).length;
 
   const weekStrip = weekDays.map((d,i) => {
@@ -1678,10 +1749,7 @@ function taskGroups(range, today){
       let daySched = 0, dayDone = 0;
       if (k <= todayKey) {
         for (const t of g.tasks) {
-          const from = t.effectiveFrom || toKey(new Date(t.createdAt || Date.now()));
-          if (k < from) continue;                      // vazifa hali mavjud emas edi
-          const isSched = t.type === 'weekly' ? (t.weekdays || []).includes(wIdx) : t.date === k;
-          if (!isSched) continue;
+          if (!isScheduledOn(t, k, wIdx)) continue;    // o'sha kunda amal qilgan jadval bo'yicha
           const isDone = !!(t.completions || {})[k];
           if (k === todayKey && !isDone) continue;      // bugun hali kutilmoqda
           daySched++; if (isDone) dayDone++;
@@ -1693,10 +1761,7 @@ function taskGroups(range, today){
     });
     let pendingToday = 0;
     for (const t of g.tasks) {
-      const from = t.effectiveFrom || toKey(new Date(t.createdAt || Date.now()));
-      if (todayKey < from) continue;
-      const isSched = t.type === 'weekly' ? (t.weekdays || []).includes(weekdayIdx(today)) : t.date === todayKey;
-      if (isSched && !(t.completions || {})[todayKey]) pendingToday++;
+      if (isScheduledOn(t, todayKey, weekdayIdx(today)) && !(t.completions || {})[todayKey]) pendingToday++;
     }
     if (scheduled > 0 || pendingToday > 0) out.push({ cat: g.cat, scheduled, done, pendingToday, data });
   }
@@ -1921,6 +1986,31 @@ document.addEventListener('change', (e) => {
 // Ilova fonga ketganda saqlanmagan holat qolsa qayta urinib ko'ramiz
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden' && state.pendingEnvelope) retrySave();
+});
+
+// iOS'da klaviatura ochilganda oyna klaviatura ostida qolib ketardi.
+// visualViewport balandligini CSS'ga uzatamiz - modal shu balandlikka moslashadi.
+function syncViewport(){
+  const vv = window.visualViewport;
+  const h = vv ? vv.height : window.innerHeight;
+  document.documentElement.style.setProperty('--rp-vh', Math.round(h) + 'px');
+}
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', syncViewport);
+  window.visualViewport.addEventListener('scroll', syncViewport);
+}
+window.addEventListener('resize', syncViewport);
+window.addEventListener('orientationchange', () => setTimeout(syncViewport, 200));
+syncViewport();
+
+// Fokus olgan maydonni ko'rinadigan joyga surib qo'yamiz
+document.addEventListener('focusin', (e) => {
+  const el = e.target;
+  if (!el || !el.closest || !el.closest('.rp-modal')) return;
+  setTimeout(() => {
+    syncViewport();
+    try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(err){}
+  }, 250);
 });
 
 // ==================== Init ====================
