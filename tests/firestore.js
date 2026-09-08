@@ -64,8 +64,18 @@ function serve(port){
         export function enableIndexedDbPersistence(){ L.calls.push('enableIndexedDbPersistence'); return Promise.resolve(); }
         export function collection(db,...p){ return {path:p.join('/')}; }
         export function doc(db,...p){ return {path:p.join('/')}; }
-        export function getDocs(){ return Promise.resolve({docs:[]}); }
-        export function onSnapshot(ref,cb){ return ()=>{}; }
+        export function getDocs(ref){ return Promise.resolve({docs: docsIn(ref.path)}); }
+        export function onSnapshot(ref,cb){
+          const w = {path:ref.path, cb};
+          L.watchers = L.watchers || []; L.watchers.push(w);
+          cb({docs: docsIn(ref.path)});
+          return ()=>{ const i=L.watchers.indexOf(w); if(i>=0) L.watchers.splice(i,1); };
+        }
+        function docsIn(collPath){
+          return Object.keys(L.docs).filter(p => p.startsWith(collPath+'/') && p.slice(collPath.length+1).indexOf('/')<0)
+            .map(p => ({id:p.split('/').pop(), data:()=>L.docs[p]}));
+        }
+        function notify(collPath){ (L.watchers||[]).filter(w=>w.path===collPath).forEach(w=>w.cb({docs:docsIn(collPath)})); }
         export function setDoc(ref,data){
           L.writes.push({path:ref.path, data});
           if (L.failWrites) return Promise.reject(Object.assign(new Error('Missing or insufficient permissions.'),{code:'permission-denied'}));
@@ -77,6 +87,8 @@ function serve(port){
           })(data,'');
           if (bad.length) return Promise.reject(new Error('Unsupported field value: undefined at '+bad.join(',')));
           L.docs[ref.path] = data;
+          // Haqiqiy Firestore yozuvdan keyin kuzatuvchilarni xabardor qiladi
+          notify(ref.path.split('/').slice(0,-1).join('/'));
           return Promise.resolve();
         }`;
     }
@@ -158,10 +170,49 @@ function serve(port){
   check('xato o\'zbekcha ko\'rsatiladi', /ruxsat yo'q/i.test(String(st3.err)), String(st3.err));
 
   await page.evaluate(() => { state.showBackup = true; render(); });
-  const ui = await page.evaluate(() => document.body.innerText);
-  check('foydalanuvchi xatoni ekranda ko\'radi', /ruxsat yo'q|yozib bo'lmadi/i.test(ui));
-  check('"saqlangan" deb YOLG\'ON aytilmaydi', !/Hammasi serverga saqlangan/.test(ui), ui.slice(0,200));
-  check('navbatdagi yozuvlar soni ko\'rsatiladi', /navbatda/.test(ui));
+  const ui0 = await page.evaluate(() => document.body.innerText);
+  check('foydalanuvchi xatoni ekranda ko\'radi', /ruxsat yo'q|yozib bo'lmadi/i.test(ui0));
+  check('"saqlangan" deb YOLG\'ON aytilmaydi', !/Hammasi serverga saqlangan/.test(ui0), ui0.slice(0,200));
+  check('navbatdagi yozuvlar soni ko\'rsatiladi', /navbatda/.test(ui0));
+
+  group('SERVERDA YETISHSA - "SAQLANGAN" DEYILMASIN');
+  // Aynan jonli saytda yuz bergan holat: navbat bo'sh, xato yo'q, lekin server bo'sh.
+  // Ilgari ilova buni "Hammasi serverga saqlangan" deb ko'rsatardi.
+  await boot();
+  await page.evaluate(async () => {
+    const L = (globalThis.__fb = globalThis.__fb || {calls:[],docs:{},writes:[]});
+    L.docs={}; L.writes=[]; L.failWrites=false;
+    state.plans = [{id:'p9',name:'Reja',category:'kontent',target:5,unit:'ta',
+      startDate:'2026-09-01',endDate:'2026-09-30',mode:'flatten',log:{},createdAt:1,editedAt:1}];
+    await commit();
+    await window.rejamCloud.signIn('a@b.com','parol123');
+  });
+  await page.waitForTimeout(700);
+  await page.evaluate(() => { state.showBackup = true; render(); });
+  let ui = await page.evaluate(() => document.body.innerText);
+  check('server bilan mos bo\'lsa "Serverda saqlangan" deydi', /Serverda saqlangan/.test(ui), ui.slice(0,300));
+  check('taqqoslash jadvali ko\'rsatiladi', /Bu telefonda/.test(ui));
+
+  // Endi serverni "bo'sh" qilib ko'rsatamiz - navbat bo'sh, xato yo'q
+  await page.evaluate(() => {
+    window.rejamCloud.counts = { plans: 0, tasks: 0, ideas: 0 };
+    window.rejamCloud.pending = 0;
+    render();
+  });
+  ui = await page.evaluate(() => document.body.innerText);
+  check('server bo\'sh bo\'lsa "saqlangan" deb YOLG\'ON aytmaydi', !/Serverda saqlangan/.test(ui), ui.slice(0,300));
+  check('yetishmayotgani aytiladi', /yetishmayapti/.test(ui));
+  check('"Qayta yuborish" tugmasi bor', /Qayta yuborish/.test(ui));
+  check('jadval farqni ko\'rsatadi (1 -> 0)', /1\s*→\s*0|1\s*&rarr;\s*0/.test(ui) || /1\s*→\s*0/.test(ui.replace(/\s+/g,' ')), ui.match(/Rejalar[^\n]*/) && ui.match(/Rejalar[^\n]*/)[0]);
+
+  // Qayta yuborish haqiqatan yuboradimi
+  await page.evaluate(() => { globalThis.__fb.docs = {}; document.querySelector('[data-action="cloud-force"]').click(); });
+  await page.waitForTimeout(600);
+  check('"Qayta yuborish" hamma yozuvni serverga jo\'natadi',
+    await page.evaluate(() => Object.keys(globalThis.__fb.docs).includes('users/u1/plans/p9')),
+    await page.evaluate(() => JSON.stringify(Object.keys(globalThis.__fb.docs))));
+
+  await page.evaluate(() => { state.showBackup = false; render(); });
 
   check('konsolda xato yo\'q', errors.length === 0, errors.join(' | '));
 
