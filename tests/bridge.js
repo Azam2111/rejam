@@ -44,13 +44,16 @@ const PLAN = (o={}) => Object.assign({
 
   // Soxta bulutni app.js dan OLDIN o'rnatamiz
   await page.addInitScript(() => {
-    window.__cloudCalls = [];
+    window.__cloudCalls = []; window.__auth = []; window.__failAuth = false;
     // cloud.js o'zining obyektini yozadi - test uchun uni qulflab qo'yamiz,
     // shunda faqat app.js ko'prigi sinaladi, Firebase emas.
     const fake = {
       enabled: true, status: 'signed-out', user: null,
-      signIn(){ return Promise.resolve(false); },
-      signOut(){ return Promise.resolve(); },
+      error: null,
+      signIn(e,p){ window.__auth.push({op:'signIn',e,p}); if(window.__failAuth){ fake.error='Email yoki parol noto\'g\'ri'; return Promise.resolve(false);} fake.status='online'; fake.user={email:e}; return Promise.resolve(true); },
+      signUp(e,p){ window.__auth.push({op:'signUp',e,p}); fake.status='online'; fake.user={email:e}; return Promise.resolve(true); },
+      resetPassword(e){ window.__auth.push({op:'reset',e}); return Promise.resolve(true); },
+      signOut(){ fake.status='signed-out'; fake.user=null; return Promise.resolve(); },
       resume(){ window.__resumed = true; },
       notifyLocalChange(prev, next){ window.__cloudCalls.push({ prev: JSON.parse(JSON.stringify(prev)), next: JSON.parse(JSON.stringify(next)) }); },
       onChange: null,
@@ -170,6 +173,96 @@ const PLAN = (o={}) => Object.assign({
   check('RejamSync global mavjud', await page.evaluate(() => !!(window.RejamSync && window.RejamSync.createSync)));
   check('rejamGetLocal to\'rt kolleksiyani beradi',
     await page.evaluate(() => { const l = window.rejamGetLocal(); return ['plans','tasks','ideas','categories'].every(k => Array.isArray(l[k])); }));
+
+  group('BULUT KIRISH OYNASI (email + parol)');
+  await boot();
+  await page.evaluate(() => { state.showBackup = true; render(); });
+
+  check('kirish maydonlari chiqadi',
+    await page.evaluate(() => !!document.getElementById('f-cloud-email') && !!document.getElementById('f-cloud-pass')));
+  check('parol maydoni type=password',
+    await page.evaluate(() => document.getElementById('f-cloud-pass').type) === 'password');
+  check('iOS kattalashtirmasligi uchun shrift 16px',
+    await page.evaluate(() => getComputedStyle(document.getElementById('f-cloud-email')).fontSize) === '16px');
+  check('Google tugmasi endi yo\'q (iOS da ishlamaydi)',
+    await page.evaluate(() => !/cloud-signin"/.test(document.body.innerHTML)));
+
+  // Bo'sh yuborish
+  await page.evaluate(() => { document.querySelector('[data-action="cloud-submit"]').click(); });
+  await page.waitForTimeout(200);
+  check('bo\'sh maydon bilan so\'rov yuborilmaydi',
+    await page.evaluate(() => window.__auth.length) === 0);
+  check('bo\'shligi haqida ogohlantiradi',
+    await page.evaluate(() => /Email va parolni kiriting/.test(document.body.innerText)));
+
+  // Kirish
+  await page.fill('#f-cloud-email', 'azam@example.com');
+  await page.fill('#f-cloud-pass', 'sirlisir123');
+  await page.click('[data-action="cloud-submit"]');
+  await page.waitForTimeout(400);
+  let au = await page.evaluate(() => window.__auth);
+  check('kirish so\'rovi to\'g\'ri yuboriladi',
+    au.length === 1 && au[0].op === 'signIn' && au[0].e === 'azam@example.com' && au[0].p === 'sirlisir123',
+    JSON.stringify(au));
+
+  // ENG MUHIM: parol hech qayerda saqlanmasin
+  const leak = await page.evaluate(() => {
+    const hay = JSON.stringify(state) + '|' + localStorage.getItem('rejam-snapshot-v3');
+    return { state: /sirlisir123/.test(JSON.stringify(state)), ls: /sirlisir123/.test(String(localStorage.getItem('rejam-snapshot-v3'))),
+             hammasi: Object.keys(localStorage).filter(k => /sirlisir123/.test(String(localStorage.getItem(k)))) };
+  });
+  check('parol state ichida saqlanmaydi', leak.state === false);
+  check('parol diskka yozilmaydi', leak.ls === false && leak.hammasi.length === 0, JSON.stringify(leak.hammasi));
+  check('email esa eslab qolinadi (qulaylik uchun)',
+    await page.evaluate(() => state.cloudEmail) === 'azam@example.com');
+  check('kirgandan keyin email ko\'rsatiladi',
+    await page.evaluate(() => /azam@example\.com/.test(document.body.innerText)));
+
+  // Chiqish
+  await page.click('[data-action="cloud-signout"]');
+  await page.waitForTimeout(300);
+  check('chiqishdan keyin maydonlar qaytadi',
+    await page.evaluate(() => !!document.getElementById('f-cloud-email')));
+
+  // Ro'yxatdan o'tish rejimi
+  await page.click('[data-action="cloud-mode"]');
+  await page.waitForTimeout(200);
+  check('ro\'yxatdan o\'tish rejimiga o\'tadi',
+    await page.evaluate(() => state.cloudMode) === 'signup');
+  check('parol maydoni new-password bo\'ladi',
+    await page.evaluate(() => document.getElementById('f-cloud-pass').autocomplete) === 'new-password');
+  await page.fill('#f-cloud-email', 'yangi@example.com');
+  await page.fill('#f-cloud-pass', 'yangiparol1');
+  await page.click('[data-action="cloud-submit"]');
+  await page.waitForTimeout(400);
+  au = await page.evaluate(() => window.__auth);
+  check('signUp chaqiriladi, signIn emas', au[au.length-1].op === 'signUp', JSON.stringify(au[au.length-1]));
+
+  // Xato ko'rsatilishi
+  await page.click('[data-action="cloud-signout"]');
+  await page.waitForTimeout(250);
+  await page.click('[data-action="cloud-mode"]');          // signin rejimiga qaytamiz
+  await page.waitForTimeout(200);
+  await page.evaluate(() => { window.__failAuth = true; });
+  await page.fill('#f-cloud-email', 'azam@example.com');
+  await page.fill('#f-cloud-pass', 'notogri');
+  await page.click('[data-action="cloud-submit"]');
+  await page.waitForTimeout(400);
+  check('xato foydalanuvchiga ko\'rsatiladi',
+    await page.evaluate(() => /Email yoki parol noto/.test(document.body.innerText)),
+    await page.evaluate(() => document.body.innerText.slice(0,200)));
+
+  // Parolni tiklash
+  await page.evaluate(() => { window.__failAuth = false; });
+  await page.click('[data-action="cloud-reset"]');
+  await page.waitForTimeout(400);
+  au = await page.evaluate(() => window.__auth);
+  check('parolni tiklash emailga yuboriladi',
+    au[au.length-1].op === 'reset' && au[au.length-1].e === 'azam@example.com', JSON.stringify(au[au.length-1]));
+  check('tiklash haqida xabar chiqadi',
+    await page.evaluate(() => /Tiklash havolasi/.test(document.body.innerText)));
+
+  await page.evaluate(() => { state.showBackup = false; render(); });
 
   check('konsolda xato yo\'q', errors.length === 0, errors.join(' | '));
 
