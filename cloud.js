@@ -22,6 +22,7 @@
     status: 'off',            // off | signed-out | connecting | online | error
     user: null,
     error: null,
+    pending: 0,
     signIn() { return Promise.resolve(false); },
     signUp() { return Promise.resolve(false); },
     resetPassword() { return Promise.resolve(false); },
@@ -58,8 +59,11 @@
       db = fs.getFirestore(app);
       // Kirish holati shu qurilmada saqlansin - har safar qaytadan kirish shart emas
       try { await authMod.setPersistence(auth, authMod.browserLocalPersistence); } catch (e) {}
-      // Offline kesh - internet yo'q bo'lsa ham ilova ishlaydi
-      if (fs.enableIndexedDbPersistence) fs.enableIndexedDbPersistence(db).catch(() => {});
+      // DIQQAT: Firestore'ning offline keshi (enableIndexedDbPersistence) ATAYLAB yoqilmagan.
+      // U yoqilsa setDoc() ma'lumot LOKAL keshga tushishi bilanoq "muvaffaqiyat" deb javob
+      // beradi - server uni rad etsa ham. Natijada ilova "Ulangan" deb turadi, serverda esa
+      // hech narsa yo'q. Ilovaning o'z offline qatlami (IndexedDB + navbat) allaqachon bor,
+      // shuning uchun Firestore keshi faqat xatoni yashirishga xizmat qilardi.
       return true;
     });
     return sdkPromise;
@@ -85,6 +89,21 @@
     return (e && e.message) ? String(e.message).replace(/^Firebase:\s*/, '') : 'Noma\'lum xato';
   }
 
+  // Firestore undefined'ni QABUL QILMAYDI - istalgan chuqurlikda bo'lsa ham
+  // butun yozuvni rad etadi. Bitta ichki undefined butun sinxronizatsiyani to'xtatadi,
+  // shuning uchun har qatlamni tozalaymiz.
+  function firestoreSafe(v) {
+    if (v === undefined) return null;
+    if (v === null || typeof v !== 'object') return Number.isNaN(v) ? null : v;
+    if (Array.isArray(v)) return v.map(x => (x === undefined ? null : firestoreSafe(x)));
+    const out = {};
+    for (const k of Object.keys(v)) {
+      if (v[k] === undefined) continue;              // maydonni butunlay tashlab ketamiz
+      out[k] = firestoreSafe(v[k]);
+    }
+    return out;
+  }
+
   // ---------- Firestore backend ----------
   const backend = {
     async signIn() {
@@ -103,9 +122,7 @@
       );
     },
     async write(uid, coll, id, doc) {
-      const clean = {};
-      for (const k of Object.keys(doc)) if (doc[k] !== undefined) clean[k] = doc[k];
-      await fs.setDoc(fs.doc(db, 'users', uid, coll, id), clean);
+      await fs.setDoc(fs.doc(db, 'users', uid, coll, id), firestoreSafe(doc));
     },
   };
 
@@ -115,7 +132,12 @@
       backend,
       getLocal: () => window.rejamGetLocal(),
       applyLocal: patch => window.rejamApplyCloud(patch),
-      onStatus: s => setStatus(s),
+      onStatus: (s, extra) => {
+        if (s === 'error' && extra && extra.message) C.error = uzErr(extra);
+        if (s === 'online') C.error = null;
+        C.pending = extra && typeof extra.pending === 'number' ? extra.pending : C.pending;
+        setStatus(s);
+      },
     });
     return sync;
   }

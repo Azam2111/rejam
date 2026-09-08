@@ -1497,8 +1497,9 @@ function cloudStatusTxt(){
   const c = window.rejamCloud;
   if (!c || !c.enabled) return "ulanmagan (faqat shu qurilmada)";
   if (c.status === 'online') {
-    const who = c.user && c.user.email;
-    return "<b style='color:#7A8F5C'>Ulangan</b>" + (who ? " &middot; " + esc(who) : '');
+    const p = Number(c.pending) || 0;
+    return p ? `<b style='color:#A6813F'>${p} ta yozuv navbatda</b>`
+             : "<b style='color:#7A8F5C'>Saqlangan</b>";
   }
   if (c.status === 'connecting') return "ulanmoqda...";
   if (c.status === 'error') return "<b style='color:#B75B3D'>Xato \u2014 qayta urinilmoqda</b>";
@@ -1516,10 +1517,18 @@ function renderCloudBox(){
     return `<div class="rp-cloud-box"><div class="rp-cloud-msg">Ulanmoqda...</div></div>`;
   }
   if (c.status === 'online' || (c.user && c.status !== 'signed-out')) {
+    const pending = Number(c.pending) || 0;
+    const xato = c.status === 'error';
+    // Holatni bo'yab ko'rsatmaymiz: yuborilmagan yozuv bo'lsa "saqlandi" deyilmaydi
+    const holat = xato
+      ? `<div class="rp-cloud-err">${esc(c.error || 'Serverga yozib bo\'lmadi')}${pending ? ` &middot; ${pending} ta yozuv navbatda` : ''}<br>Qayta urinilmoqda — ma'lumot telefonda saqlanib turibdi.</div>`
+      : (pending
+          ? `<div class="rp-cloud-msg">${pending} ta yozuv yuborilmoqda...</div>`
+          : `<div class="rp-cloud-ok">Hammasi serverga saqlangan.</div>`);
     return `
       <div class="rp-cloud-box">
-        <div class="rp-cloud-msg">Ma'lumot <b>${esc((c.user && c.user.email) || '')}</b> hisobiga saqlanmoqda.</div>
-        ${c.status === 'error' ? `<div class="rp-cloud-err">${esc(c.error || 'Ulanishda xato - qayta urinilmoqda')}</div>` : ''}
+        <div class="rp-cloud-msg">Hisob: <b>${esc((c.user && c.user.email) || '')}</b></div>
+        ${holat}
         <button class="rp-add-btn" data-action="cloud-signout">Bulutdan chiqish</button>
       </div>`;
   }

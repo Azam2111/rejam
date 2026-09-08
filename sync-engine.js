@@ -38,7 +38,10 @@
     const key = (coll, id) => coll + '/' + id;
     const editedOf = e => Number(e && e.editedAt) || 0;
 
-    function setStatus(s, extra) { onStatus(s, extra || null); }
+    let lastError = null;
+    function setStatus(s, extra) {
+      onStatus(s, Object.assign({ pending: queue.size }, extra || {}));
+    }
 
     // ---------- Chiqish ----------
     function pushEntity(coll, id, doc) {
@@ -73,6 +76,7 @@
           queue.delete(k);
         } catch (e) {
           failed = true;
+          lastError = e;
           log('write failed', item.coll, item.id, e && e.message);
           break;                                        // tartibni saqlaymiz, qolganini keyin
         }
@@ -80,12 +84,13 @@
 
       flushing = false;
       if (failed || queue.size) {
-        setStatus('error');
+        setStatus('error', lastError ? { message: lastError.message, code: lastError.code } : null);
         retryDelay = Math.min(retryDelay * 2, 30000);
         clearTimeout(retryTimer);
         retryTimer = setTimeout(flush, retryDelay);
       } else {
         retryDelay = 500;
+        lastError = null;
         setStatus('online');
       }
     }
@@ -190,7 +195,8 @@
           applyRemote(coll, docs);
         }
       } catch (e) {
-        setStatus('error');
+        lastError = e;
+        setStatus('error', { message: e && e.message, code: e && e.code });
         return false;
       }
 
@@ -237,6 +243,7 @@
       start, stop, localChanged,
       get uid() { return uid; },
       get pending() { return queue.size; },
+      get lastError() { return lastError; },
       _queue: queue,
       _flush: flush,
     };
