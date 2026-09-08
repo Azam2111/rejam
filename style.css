@@ -298,3 +298,33 @@ body {
 .rp-cel-bar.rp-cel-quiet { color:#6F8452; background:#F2F6EA; border-color:#C8D6B4; animation-duration:1.1s; }
 .dp-plan-row + .rp-cel-bar { margin-top:6px; margin-bottom:2px; }
 .rp-cel-dot { width:8px; height:8px; }
+
+/* ---------- Bulut kirish ---------- */
+.rp-cloud-box{
+  border:1px solid #E6DFD2; border-radius:14px; padding:14px;
+  margin:14px 0 6px; background:#FBF8F2;
+}
+.rp-cloud-title{ font-weight:650; font-size:15px; color:#3D3527; margin-bottom:4px; }
+.rp-cloud-msg{ font-size:13px; color:#7A6D58; line-height:1.45; margin-bottom:10px; }
+.rp-cloud-input{
+  width:100%; box-sizing:border-box; margin-bottom:8px;
+  background:#F6EFE3; border:1px solid #DCCBA9; border-radius:10px;
+  padding:11px 12px; color:#3A2A1C; font-size:16px;   /* 16px - iOS o'zi kattalashtirmasligi uchun */
+  font-family:'Inter',sans-serif; outline:none; transition:border-color .2s;
+}
+.rp-cloud-input:focus{ border-color:#C08A2E; }
+.rp-cloud-input::placeholder{ color:#A08F76; }
+.rp-cloud-box .rp-save-btn{ margin-top:2px; }
+.rp-cloud-err{
+  font-size:13px; color:#9B3F26; background:#F7E7E1;
+  border-radius:9px; padding:8px 10px; margin-bottom:10px; line-height:1.4;
+}
+.rp-cloud-ok{
+  font-size:13px; color:#4A6B3C; background:#EAF1E4;
+  border-radius:9px; padding:8px 10px; margin-bottom:10px; line-height:1.4;
+}
+.rp-cloud-links{
+  display:flex; flex-wrap:wrap; gap:4px 14px;
+  justify-content:space-between; margin-top:6px;
+}
+.rp-cloud-links .rp-link-btn{ padding:6px 0; font-size:13px; }

@@ -1,7 +1,15 @@
 // ==================== Firebase adapteri ====================
 // Sinxronizatsiya MANTIG'I bu yerda emas - u sync-engine.js da va alohida sinaladi.
 // Bu fayl faqat "backend" interfeysini Firebase bilan bog'laydi.
-// Konfiguratsiya bo'lmasa hech narsa qilmaydi.
+//
+// NEGA email+parol, Google emas:
+//   iOS Safari uchinchi tomon saytining xotirasini bloklaydi (ITP). Firebase'ning
+//   Google-orqali-kirishi majburan firebaseapp.com orqali o'tadi va o'sha yerda
+//   yiqiladi ("missing initial state"). Bosh ekranga o'rnatilgan ilovada bundan
+//   ham qattiqroq: u Safari'dan alohida xotirada yashaydi va tashqi saytga
+//   sakraganda qaytib kelmaydi.
+//   Email+parol esa oddiy HTTPS so'rov - ilovaning O'Z manzilidan Google serveriga.
+//   Popup yo'q, boshqa saytga sakrash yo'q, uchinchi tomon xotirasi yo'q.
 
 (function () {
   'use strict';
@@ -13,9 +21,13 @@
     enabled: false,
     status: 'off',            // off | signed-out | connecting | online | error
     user: null,
+    error: null,
     signIn() { return Promise.resolve(false); },
+    signUp() { return Promise.resolve(false); },
+    resetPassword() { return Promise.resolve(false); },
     signOut() { return Promise.resolve(); },
     notifyLocalChange() {},
+    resume() { return Promise.resolve(); },
     onChange: null,
   };
   window.rejamCloud = stub;
@@ -37,13 +49,15 @@
       import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js'),
       import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js'),
       import('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js'),
-    ]).then(mods => {
+    ]).then(async mods => {
       const appMod = mods[0];
       authMod = mods[1];
       fs = mods[2];
       const app = appMod.initializeApp(cfg);
       auth = authMod.getAuth(app);
       db = fs.getFirestore(app);
+      // Kirish holati shu qurilmada saqlansin - har safar qaytadan kirish shart emas
+      try { await authMod.setPersistence(auth, authMod.browserLocalPersistence); } catch (e) {}
       // Offline kesh - internet yo'q bo'lsa ham ilova ishlaydi
       if (fs.enableIndexedDbPersistence) fs.enableIndexedDbPersistence(db).catch(() => {});
       return true;
@@ -51,14 +65,31 @@
     return sdkPromise;
   }
 
+  // Firebase xatolarini odam tushunadigan tilga o'giramiz
+  function uzErr(e) {
+    const code = String((e && e.code) || '');
+    const map = {
+      'auth/invalid-email': "Email manzil noto'g'ri yozilgan",
+      'auth/missing-password': "Parol kiritilmadi",
+      'auth/weak-password': "Parol juda oddiy - kamida 6 ta belgi bo'lsin",
+      'auth/email-already-in-use': "Bu email allaqachon ro'yxatdan o'tgan. \"Kirish\" tugmasini bosing",
+      'auth/invalid-credential': "Email yoki parol noto'g'ri",
+      'auth/wrong-password': "Parol noto'g'ri",
+      'auth/user-not-found': "Bunday email topilmadi. Avval ro'yxatdan o'ting",
+      'auth/too-many-requests': "Juda ko'p urinish. Biroz kutib qayta urinib ko'ring",
+      'auth/network-request-failed': "Internet yo'q yoki server javob bermadi",
+      'auth/operation-not-allowed': "Bu kirish usuli Firebase'da yoqilmagan",
+      'permission-denied': "Serverda ruxsat yo'q (Firestore qoidalari)",
+    };
+    if (map[code]) return map[code];
+    return (e && e.message) ? String(e.message).replace(/^Firebase:\s*/, '') : 'Noma\'lum xato';
+  }
+
   // ---------- Firestore backend ----------
   const backend = {
     async signIn() {
       await loadSDK();
-      if (auth.currentUser) return auth.currentUser.uid;
-      const provider = new authMod.GoogleAuthProvider();
-      const cred = await authMod.signInWithPopup(auth, provider);
-      return cred.user.uid;
+      return auth.currentUser ? auth.currentUser.uid : null;
     },
     async readAll(uid, coll) {
       const snap = await fs.getDocs(fs.collection(db, 'users', uid, coll));
@@ -68,7 +99,7 @@
       return fs.onSnapshot(
         fs.collection(db, 'users', uid, coll),
         snap => cb(snap.docs.map(d => Object.assign({ id: d.id }, d.data()))),
-        () => setStatus('error')
+        err => { C.error = uzErr(err); setStatus('error'); }
       );
     },
     async write(uid, coll, id, doc) {
@@ -89,19 +120,60 @@
     return sync;
   }
 
-  C.signIn = async function () {
+  function rememberUser(u) {
+    C.user = u ? { email: u.email, uid: u.uid } : null;
+    try {
+      if (u) localStorage.setItem('rejam-cloud-on', '1');
+      else localStorage.removeItem('rejam-cloud-on');
+    } catch (e) {}
+  }
+
+  async function afterAuth() {
+    rememberUser(auth.currentUser);
+    C.error = null;
+    const ok = await ensureSync().start();
+    emit();
+    return ok;
+  }
+
+  C.signIn = async function (email, password) {
+    C.error = null;
     setStatus('connecting');
     try {
       await loadSDK();
-      const ok = await ensureSync().start();
-      if (ok) {
-        C.user = auth.currentUser ? { email: auth.currentUser.email, name: auth.currentUser.displayName } : null;
-        try { localStorage.setItem('rejam-cloud-on', '1'); } catch (e) {}
-        emit();
-      }
-      return ok;
+      await authMod.signInWithEmailAndPassword(auth, String(email || '').trim(), String(password || ''));
+      return await afterAuth();
     } catch (e) {
-      setStatus(/popup|cancel/i.test(String(e && e.message)) ? 'signed-out' : 'error');
+      C.error = uzErr(e);
+      setStatus('signed-out');
+      return false;
+    }
+  };
+
+  C.signUp = async function (email, password) {
+    C.error = null;
+    setStatus('connecting');
+    try {
+      await loadSDK();
+      await authMod.createUserWithEmailAndPassword(auth, String(email || '').trim(), String(password || ''));
+      return await afterAuth();
+    } catch (e) {
+      C.error = uzErr(e);
+      setStatus('signed-out');
+      return false;
+    }
+  };
+
+  C.resetPassword = async function (email) {
+    C.error = null;
+    try {
+      await loadSDK();
+      await authMod.sendPasswordResetEmail(auth, String(email || '').trim());
+      emit();
+      return true;
+    } catch (e) {
+      C.error = uzErr(e);
+      emit();
       return false;
     }
   };
@@ -111,9 +183,9 @@
       if (sync) sync.stop();
       if (auth) await authMod.signOut(auth);
     } catch (e) {}
-    C.user = null;
     sync = null;
-    try { localStorage.removeItem('rejam-cloud-on'); } catch (e) {}
+    rememberUser(null);
+    C.error = null;
     setStatus('signed-out');
   };
 
@@ -121,7 +193,7 @@
     if (sync) sync.localChanged(prev, next);
   };
 
-  // Ilgari kirgan bo'lsa - jim davom ettiramiz (popup ochilmaydi)
+  // Ilgari kirgan bo'lsa - jim davom ettiramiz
   C.resume = async function () {
     let was = null;
     try { was = localStorage.getItem('rejam-cloud-on'); } catch (e) {}
@@ -132,11 +204,10 @@
       const user = await new Promise(res => {
         const un = authMod.onAuthStateChanged(auth, u => { un(); res(u); });
       });
-      if (!user) { setStatus('signed-out'); return; }
-      C.user = { email: user.email, name: user.displayName };
-      await ensureSync().start();
-      emit();
+      if (!user) { rememberUser(null); setStatus('signed-out'); return; }
+      await afterAuth();
     } catch (e) {
+      C.error = uzErr(e);
       setStatus('error');
     }
   };

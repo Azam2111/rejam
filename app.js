@@ -275,6 +275,9 @@ let state = {
   showAddTask: false,
   showBackup: false,
   booted: false,
+  cloudMode: 'signin',       // signin | signup
+  cloudEmail: '',            // parol HECH QACHON state'ga yozilmaydi
+  cloudNote: null,
   saveError: null,
   pendingEnvelope: null,
   readErrors: [],
@@ -1494,7 +1497,7 @@ function cloudStatusTxt(){
   const c = window.rejamCloud;
   if (!c || !c.enabled) return "ulanmagan (faqat shu qurilmada)";
   if (c.status === 'online') {
-    const who = c.user && (c.user.email || c.user.name);
+    const who = c.user && c.user.email;
     return "<b style='color:#7A8F5C'>Ulangan</b>" + (who ? " &middot; " + esc(who) : '');
   }
   if (c.status === 'connecting') return "ulanmoqda...";
@@ -1502,15 +1505,46 @@ function cloudStatusTxt(){
   return "kirilmagan";
 }
 
-// Bulut tugmasi: kirish / chiqish
-function renderCloudBtn(){
+// Bulut bo'limi: email + parol.
+// Google/popup emas - iOS Safari uchinchi tomon xotirasini bloklaydi va u yerda
+// Firebase'ning popup oqimi "missing initial state" bilan yiqiladi.
+function renderCloudBox(){
   const c = window.rejamCloud;
   if (!c || !c.enabled) return '';
-  if (c.status === 'connecting') return `<button class="rp-add-btn" disabled>Ulanmoqda...</button>`;
-  if (c.status === 'online') {
-    return `<button class="rp-add-btn" data-action="cloud-signout">Bulutdan chiqish</button>`;
+
+  if (c.status === 'connecting') {
+    return `<div class="rp-cloud-box"><div class="rp-cloud-msg">Ulanmoqda...</div></div>`;
   }
-  return `<button class="rp-add-btn" data-action="cloud-signin">Google bilan kirish (bulut zaxira)</button>`;
+  if (c.status === 'online' || (c.user && c.status !== 'signed-out')) {
+    return `
+      <div class="rp-cloud-box">
+        <div class="rp-cloud-msg">Ma'lumot <b>${esc((c.user && c.user.email) || '')}</b> hisobiga saqlanmoqda.</div>
+        ${c.status === 'error' ? `<div class="rp-cloud-err">${esc(c.error || 'Ulanishda xato - qayta urinilmoqda')}</div>` : ''}
+        <button class="rp-add-btn" data-action="cloud-signout">Bulutdan chiqish</button>
+      </div>`;
+  }
+
+  const mode = state.cloudMode === 'signup' ? 'signup' : 'signin';
+  return `
+    <div class="rp-cloud-box">
+      <div class="rp-cloud-title">${mode === 'signup' ? "Bulut hisobini yaratish" : "Bulutga kirish"}</div>
+      <div class="rp-cloud-msg">Telefon yo'qolsa ham ma'lumot shu hisob orqali qaytadi.</div>
+      ${c.error ? `<div class="rp-cloud-err">${esc(c.error)}</div>` : ''}
+      ${state.cloudNote ? `<div class="rp-cloud-ok">${esc(state.cloudNote)}</div>` : ''}
+      <input class="rp-cloud-input" id="f-cloud-email" type="email" inputmode="email"
+             autocomplete="email" autocapitalize="off" autocorrect="off"
+             placeholder="Email" value="${esc(state.cloudEmail || '')}" />
+      <input class="rp-cloud-input" id="f-cloud-pass" type="password"
+             autocomplete="${mode === 'signup' ? 'new-password' : 'current-password'}"
+             placeholder="Parol${mode === 'signup' ? " (kamida 6 ta belgi)" : ''}" />
+      <button class="rp-save-btn" data-action="cloud-submit">${mode === 'signup' ? "Hisob yaratish" : "Kirish"}</button>
+      <div class="rp-cloud-links">
+        <button class="rp-link-btn" data-action="cloud-mode" data-mode="${mode === 'signup' ? 'signin' : 'signup'}">
+          ${mode === 'signup' ? "Hisobim bor - kirish" : "Hisobim yo'q - yaratish"}
+        </button>
+        ${mode === 'signin' ? `<button class="rp-link-btn" data-action="cloud-reset">Parolni unutdim</button>` : ''}
+      </div>
+    </div>`;
 }
 
 function renderImportPreview(){
@@ -1569,7 +1603,7 @@ function renderBackupModal(){
         <p class="rp-note">Ma'lumot uch joyda saqlanadi: tez xotira, zaxira nusxa va IndexedDB. Bittasi o'chsa, ilova qolganidan avtomatik tiklaydi. Telefon yo'qolsa &mdash; tashqi zaxira yoki bulut qutqaradi.</p>
 
         ${renderImportPreview()}
-        ${renderCloudBtn()}
+        ${renderCloudBox()}
         <button class="rp-save-btn" data-action="export-data">Zaxira faylni saqlash</button>
         <button class="rp-add-btn" data-action="copy-backup">Matn sifatida nusxa olish</button>
         <button class="rp-add-btn" data-action="import-data">Zaxiradan tiklash</button>
@@ -2222,16 +2256,44 @@ const handlers = {
   'open-backup': () => { state.showBackup = true; render(); requestPersistence().then(render); },
   'close-backup': () => { state.showBackup = false; render(); },
   'export-data': () => exportData(),
-  'cloud-signin': () => {
+  'cloud-mode': (btn) => {
+    state.cloudMode = btn.dataset.mode === 'signup' ? 'signup' : 'signin';
+    state.cloudNote = null;
+    const c = window.rejamCloud; if (c) c.error = null;
+    render();
+  },
+  'cloud-submit': () => {
     const c = window.rejamCloud;
     if (!c || !c.signIn) return;
+    const em = document.getElementById('f-cloud-email');
+    const pw = document.getElementById('f-cloud-pass');
+    const email = ((em && em.value) || '').trim();
+    const pass = (pw && pw.value) || '';
+    state.cloudEmail = email;                 // parol HECH QAYERDA saqlanmaydi
+    state.cloudNote = null;
+    if (!email || !pass) { c.error = 'Email va parolni kiriting'; render(); return; }
+    const signup = state.cloudMode === 'signup';
     render();
-    c.signIn().then(ok => { render(); toast(ok ? 'Bulutga ulandi' : 'Ulanmadi'); });
+    (signup ? c.signUp(email, pass) : c.signIn(email, pass)).then(ok => {
+      render();
+      if (ok) toast(signup ? 'Hisob yaratildi va ulandi' : 'Bulutga ulandi');
+    });
+  },
+  'cloud-reset': () => {
+    const c = window.rejamCloud;
+    const em = document.getElementById('f-cloud-email');
+    const email = ((em && em.value) || state.cloudEmail || '').trim();
+    if (!email) { c.error = 'Avval email manzilingizni yozing'; render(); return; }
+    state.cloudEmail = email;
+    c.resetPassword(email).then(ok => {
+      state.cloudNote = ok ? 'Tiklash havolasi ' + email + ' ga yuborildi' : null;
+      render();
+    });
   },
   'cloud-signout': () => {
     const c = window.rejamCloud;
     if (!c || !c.signOut) return;
-    c.signOut().then(() => { render(); toast('Bulutdan chiqildi'); });
+    c.signOut().then(() => { state.cloudNote = null; render(); toast('Bulutdan chiqildi'); });
   },
   'copy-backup': () => copyBackup(),
   'import-data': () => { const i = document.getElementById('rp-import-file'); if (i) i.click(); },
