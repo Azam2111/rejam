@@ -34,13 +34,15 @@
     let retryTimer = null;
     // Remote'dan kelgan oxirgi editedAt, entity bo'yicha
     const remoteEdited = new Map();
+    // Serverda HAQIQATAN nechta yozuv borligi. Taxmin emas - serverdan kelgan son.
+    const remoteCounts = { plans: null, tasks: null, ideas: null };
 
     const key = (coll, id) => coll + '/' + id;
     const editedOf = e => Number(e && e.editedAt) || 0;
 
     let lastError = null;
     function setStatus(s, extra) {
-      onStatus(s, Object.assign({ pending: queue.size }, extra || {}));
+      onStatus(s, Object.assign({ pending: queue.size, counts: Object.assign({}, remoteCounts) }, extra || {}));
     }
 
     // ---------- Chiqish ----------
@@ -138,6 +140,10 @@
         return;
       }
 
+      if (coll in remoteCounts) {
+        remoteCounts[coll] = docs.filter(d => !d.deletedAt).length;
+      }
+
       const list = (local[coll] || []).slice();
       const byId = new Map(list.map((e, i) => [e.id, i]));
       let changed = false;
@@ -231,6 +237,20 @@
       }
     }
 
+    // Hamma lokal yozuvni navbatga qaytadan qo'yadi. Server bilan mos kelmay qolganda
+    // foydalanuvchi buni o'zi bosa oladi - "nimadir bo'ldi" holatidan chiqish yo'li.
+    function forcePush() {
+      const local = getLocal();
+      let n = 0;
+      for (const coll of COLLECTIONS) {
+        for (const e of (local[coll] || [])) { pushEntity(coll, e.id, Object.assign({}, e, { deletedAt: null })); n++; }
+      }
+      const cats = local.categories || [];
+      if (cats.length) pushEntity('meta', 'state', { id: 'state', categories: cats, editedAt: Date.now() });
+      scheduleFlush();
+      return n;
+    }
+
     function stop() {
       ready = false;
       stopFns.forEach(f => { try { f(); } catch (e) {} });
@@ -240,10 +260,11 @@
     }
 
     return {
-      start, stop, localChanged,
+      start, stop, localChanged, forcePush,
       get uid() { return uid; },
       get pending() { return queue.size; },
       get lastError() { return lastError; },
+      get counts() { return Object.assign({}, remoteCounts); },
       _queue: queue,
       _flush: flush,
     };

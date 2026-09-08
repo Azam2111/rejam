@@ -23,6 +23,8 @@
     user: null,
     error: null,
     pending: 0,
+    counts: null,          // serverda HAQIQATAN nechta yozuv bor
+    forcePush() { return 0; },
     signIn() { return Promise.resolve(false); },
     signUp() { return Promise.resolve(false); },
     resetPassword() { return Promise.resolve(false); },
@@ -135,7 +137,8 @@
       onStatus: (s, extra) => {
         if (s === 'error' && extra && extra.message) C.error = uzErr(extra);
         if (s === 'online') C.error = null;
-        C.pending = extra && typeof extra.pending === 'number' ? extra.pending : C.pending;
+        if (extra && typeof extra.pending === 'number') C.pending = extra.pending;
+        if (extra && extra.counts) C.counts = extra.counts;
         setStatus(s);
       },
     });
@@ -209,6 +212,13 @@
     rememberUser(null);
     C.error = null;
     setStatus('signed-out');
+  };
+
+  // Foydalanuvchi "Qayta yuborish" bosganda
+  C.forcePush = function () {
+    if (!sync) return 0;
+    C.error = null;
+    return sync.forcePush();
   };
 
   C.notifyLocalChange = function (prev, next) {

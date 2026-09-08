@@ -1498,8 +1498,13 @@ function cloudStatusTxt(){
   if (!c || !c.enabled) return "ulanmagan (faqat shu qurilmada)";
   if (c.status === 'online') {
     const p = Number(c.pending) || 0;
-    return p ? `<b style='color:#A6813F'>${p} ta yozuv navbatda</b>`
-             : "<b style='color:#7A8F5C'>Saqlangan</b>";
+    if (p) return `<b style='color:#A6813F'>${p} ta yozuv navbatda</b>`;
+    const srv = c.counts;
+    if (!srv) return "tekshirilmoqda...";
+    const jami = state.plans.length + state.tasks.length + state.ideas.length;
+    const sj = (Number(srv.plans)||0) + (Number(srv.tasks)||0) + (Number(srv.ideas)||0);
+    return sj >= jami ? "<b style='color:#7A8F5C'>Serverda saqlangan</b>"
+                      : `<b style='color:#B75B3D'>Serverda yetishmayapti (${sj}/${jami})</b>`;
   }
   if (c.status === 'connecting') return "ulanmoqda...";
   if (c.status === 'error') return "<b style='color:#B75B3D'>Xato \u2014 qayta urinilmoqda</b>";
@@ -1519,16 +1524,43 @@ function renderCloudBox(){
   if (c.status === 'online' || (c.user && c.status !== 'signed-out')) {
     const pending = Number(c.pending) || 0;
     const xato = c.status === 'error';
-    // Holatni bo'yab ko'rsatmaymiz: yuborilmagan yozuv bo'lsa "saqlandi" deyilmaydi
-    const holat = xato
-      ? `<div class="rp-cloud-err">${esc(c.error || 'Serverga yozib bo\'lmadi')}${pending ? ` &middot; ${pending} ta yozuv navbatda` : ''}<br>Qayta urinilmoqda — ma'lumot telefonda saqlanib turibdi.</div>`
-      : (pending
-          ? `<div class="rp-cloud-msg">${pending} ta yozuv yuborilmoqda...</div>`
-          : `<div class="rp-cloud-ok">Hammasi serverga saqlangan.</div>`);
+
+    // "Saqlandi" degan so'zni SERVER tasdiqlamaguncha aytmaymiz.
+    // Ilgari bu yerda navbat bo'shligi "saqlandi" deb talqin qilinardi - bu yolg'on edi:
+    // navbat hech qachon to'lmagan bo'lsa ham bo'sh ko'rinadi.
+    const lokal = { plans: state.plans.length, tasks: state.tasks.length, ideas: state.ideas.length };
+    const srv = c.counts;
+    const jami = lokal.plans + lokal.tasks + lokal.ideas;
+    const srvJami = srv ? (Number(srv.plans)||0) + (Number(srv.tasks)||0) + (Number(srv.ideas)||0) : null;
+    const mos = srv && srvJami >= jami;
+
+    const qator = (nom, a, b) =>
+      `<div class="rp-srv-row"><span>${nom}</span><b class="${b !== null && b < a ? 'rp-srv-bad' : ''}">${a} &rarr; ${b === null ? '?' : b}</b></div>`;
+
+    let holat;
+    if (xato) {
+      holat = `<div class="rp-cloud-err">${esc(c.error || 'Serverga yozib bo\'lmadi')}${pending ? ` &middot; ${pending} ta navbatda` : ''}<br>Ma'lumot telefonda saqlanib turibdi, yo'qolmaydi.</div>`;
+    } else if (pending) {
+      holat = `<div class="rp-cloud-msg">${pending} ta yozuv yuborilmoqda...</div>`;
+    } else if (srv === null) {
+      holat = `<div class="rp-cloud-msg">Server bilan tekshirilmoqda...</div>`;
+    } else if (mos) {
+      holat = `<div class="rp-cloud-ok">Serverda saqlangan.</div>`;
+    } else {
+      holat = `<div class="rp-cloud-err">Serverda ma'lumot yetishmayapti. "Qayta yuborish"ni bosing.</div>`;
+    }
+
     return `
       <div class="rp-cloud-box">
         <div class="rp-cloud-msg">Hisob: <b>${esc((c.user && c.user.email) || '')}</b></div>
         ${holat}
+        <div class="rp-srv-box">
+          <div class="rp-srv-head">Bu telefonda &rarr; Serverda</div>
+          ${qator('Rejalar', lokal.plans, srv ? (Number(srv.plans)||0) : null)}
+          ${qator('Vazifalar', lokal.tasks, srv ? (Number(srv.tasks)||0) : null)}
+          ${qator('Fikrlar', lokal.ideas, srv ? (Number(srv.ideas)||0) : null)}
+        </div>
+        <button class="rp-add-btn" data-action="cloud-force">Qayta yuborish</button>
         <button class="rp-add-btn" data-action="cloud-signout">Bulutdan chiqish</button>
       </div>`;
   }
@@ -2298,6 +2330,13 @@ const handlers = {
       state.cloudNote = ok ? 'Tiklash havolasi ' + email + ' ga yuborildi' : null;
       render();
     });
+  },
+  'cloud-force': () => {
+    const c = window.rejamCloud;
+    if (!c || !c.forcePush) return;
+    const n = c.forcePush();
+    render();
+    toast(n ? n + ' ta yozuv qayta yuborilmoqda' : 'Yuboriladigan yozuv yo\'q');
   },
   'cloud-signout': () => {
     const c = window.rejamCloud;
