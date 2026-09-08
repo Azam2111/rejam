@@ -439,6 +439,7 @@ function validatePlan(raw, seen, issues){
     createdAt: createdAt === null ? Date.now() : createdAt,
     pauseIntervals: migratePause(raw, issues),
     legacyPauseDays: legacyDays,
+    editedAt: finiteNum(raw.editedAt) === null ? undefined : finiteNum(raw.editedAt),
   };
 }
 
@@ -523,6 +524,7 @@ function validateTask(raw, seen, issues){
     createdAt: createdAt === null ? Date.now() : createdAt,
     effectiveFrom,
     scheduleHistory: cleanScheduleHistory(raw.scheduleHistory, { type, weekdays, date, effectiveFrom }, issues),
+    editedAt: finiteNum(raw.editedAt) === null ? undefined : finiteNum(raw.editedAt),
   };
 }
 
@@ -617,10 +619,11 @@ function currentEnvelope(bumpRevision){
 
 // Ma'lumot o'zgarganda chaqiriladi. Xatoni YASHIRMAYDI.
 function commit(){
+  stampEdits();
   const env = currentEnvelope(true);
   state.saveError = null;
   writeQueue = writeQueue.then(() => persistEnvelope(env)).catch(() => {});
-  if (window.rejamCloud && window.rejamCloud.push) window.rejamCloud.push(env);
+  cloudNotify();
   return writeQueue;
 }
 
@@ -664,19 +667,112 @@ function mirror(){ /* commit() ning o'zi hamma qatlamga yozadi */ }
 function snapshot(){ return currentEnvelope(false); }
 
 // ---------- Bulut bilan aloqa nuqtalari ----------
-window.rejamLocalSavedAt = function(){ return revisionCounter; };
-window.rejamApplyRemote = function(remote){
-  const v = validateEnvelope(remote);
-  if (!v.ok) return;
+// Bulut mantiqi bu yerda EMAS - u sync-engine.js da. Bu yerda faqat uch nuqta:
+//   1) har entity'ning TAHRIR vaqti (editedAt) belgilanadi
+//   2) o'zgarish bulutga bildiriladi
+//   3) bulutdan kelgan ma'lumot xuddi import kabi darvozadan o'tkaziladi
+const CLOUD_COLLS = ['plans', 'tasks', 'ideas'];
+let cloudPrev = null;          // oxirgi marta bulutga bildirilgan lokal nusxa (chuqur)
+
+function cloudView(){
+  return { plans: state.plans, tasks: state.tasks, ideas: state.ideas, categories: state.categories };
+}
+function deepCopy(o){ return JSON.parse(JSON.stringify(o)); }
+
+// editedAt'siz solishtirish: editedAt'ning o'zi o'zgargani "tahrir" hisoblanmaydi
+function sameExceptEdited(a, b){
+  if (!a || !b) return false;
+  const x = Object.assign({}, a); delete x.editedAt;
+  const y = Object.assign({}, b); delete y.editedAt;
+  return JSON.stringify(x) === JSON.stringify(y);
+}
+
+// Haqiqatan o'zgargan yozuvlargagina yangi editedAt qo'yiladi.
+// Hammaga "hozir" qo'yilsa, bir hafta yopiq turgan qurilma serverni bosib ketardi.
+function stampEdits(){
+  if (!cloudPrev) return;
+  const now = Date.now();
+  for (const coll of CLOUD_COLLS) {
+    const prevMap = new Map((cloudPrev[coll] || []).map(e => [e.id, e]));
+    const arr = state[coll] || [];
+    for (let i = 0; i < arr.length; i++) {
+      if (!sameExceptEdited(prevMap.get(arr[i].id), arr[i])) {
+        arr[i] = Object.assign({}, arr[i], { editedAt: now });
+      }
+    }
+  }
+}
+
+// Eski ma'lumotda editedAt yo'q. Unga "hozir" emas, HAQIQIY oxirgi saqlanish vaqti qo'yiladi.
+function ensureEditedAt(env){
+  const base = Number(env && env.updatedAt) || Date.now();
+  for (const coll of CLOUD_COLLS) {
+    for (const e of (state[coll] || [])) {
+      if (!Number.isFinite(Number(e.editedAt))) e.editedAt = Number(e.createdAt) || base;
+    }
+  }
+}
+
+function cloudNotify(){
+  const next = cloudView();
+  const c = window.rejamCloud;
+  if (c && c.notifyLocalChange && cloudPrev) {
+    try { c.notifyLocalChange(cloudPrev, next); } catch(e){ console.warn('[Rejam] bulut xabari:', e); }
+  }
+  cloudPrev = deepCopy(next);
+}
+
+// Bulut o'qiydi
+window.rejamGetLocal = function(){ return cloudView(); };
+
+// Bulut yozadi. Ishonchsiz manba - hamma narsa validateEnvelope'dan o'tadi.
+window.rejamApplyCloud = function(patch){
+  if (!patch || typeof patch !== 'object') return;
+  const merged = Object.assign(cloudView(), patch);
+  const v = validateEnvelope({
+    schemaVersion: SCHEMA_VERSION,
+    plans: merged.plans, tasks: merged.tasks, ideas: merged.ideas, categories: merged.categories,
+  });
+  if (!v.ok) { console.warn('[Rejam] bulutdan kelgan ma\'lumot rad etildi:', v.issues); return; }
+
+  // Darvoza buzuq yozuvni tashlaydi. Lekin "tashlandi" degani "o'chirilsin" degani EMAS:
+  // serverdagi bitta buzuq hujjat lokal yozuvni yo'q qilib yubormasligi kerak.
+  // Shu sabab patchda kelgan, ammo tekshiruvdan o'tmagan ID'lar lokal holatidan qaytariladi.
+  for (const coll of CLOUD_COLLS) {
+    if (!Array.isArray(patch[coll])) continue;
+    const validIds = new Set(v.envelope[coll].map(e => e.id));
+    const localById = new Map((state[coll] || []).map(e => [e.id, e]));
+    let restored = 0;
+    for (const raw of patch[coll]) {
+      const id = raw && raw.id;
+      if (!id || validIds.has(id)) continue;
+      const mine = localById.get(id);
+      if (mine) { v.envelope[coll].push(mine); validIds.add(id); restored++; }
+    }
+    if (restored) console.warn('[Rejam] bulutdagi ' + restored + ' ta buzuq yozuv e\'tiborsiz qoldirildi, lokal nusxa saqlandi');
+
+    // Patchda yozuv bor edi, lekin birortasi ham o'tmadi -> bu buzuq yuk, "hammasini o'chir"
+    // degan buyruq emas. Butun patch rad etiladi.
+    if (patch[coll].length > 0 && v.envelope[coll].length === 0) {
+      console.warn('[Rejam] bulut patchi rad etildi: ' + coll + ' ichidagi hech bir yozuv tekshiruvdan o\'tmadi');
+      return;
+    }
+  }
+
   state.categories = v.envelope.categories || [];
   state.plans = v.envelope.plans;
   state.tasks = v.envelope.tasks;
   state.ideas = v.envelope.ideas;
-  revisionCounter = Math.max(revisionCounter, v.envelope.revision);
-  writeQueue = writeQueue.then(() => persistEnvelope(currentEnvelope(false))).catch(()=>{});
+  ensureEditedAt(null);
+
+  // Diskka yozamiz, lekin bulutga QAYTA yubormaymiz - aks holda cheksiz aylanma
+  const env = currentEnvelope(true);
+  writeQueue = writeQueue.then(() => persistEnvelope(env)).catch(() => {});
+  cloudPrev = deepCopy(cloudView());
   render();
-  toast('Boshqa qurilmadan yangilandi');
 };
+
+window.rejamLocalSavedAt = function(){ return revisionCounter; };
 
 // ---------- Doimiy xotira ----------
 async function requestPersistence(){
@@ -781,9 +877,18 @@ async function bootstrapStorage(){
     }
   }
 
+  ensureEditedAt(best ? best.env : null);
+  cloudPrev = deepCopy(cloudView());
+
   state.booted = true;
   render();
   if (state.readErrors.length) console.warn('[Rejam] storage diagnostics:', state.readErrors);
+
+  const cloud = window.rejamCloud;
+  if (cloud && cloud.enabled) {
+    cloud.onChange = () => { if (state.showBackup) render(); };
+    if (cloud.resume) cloud.resume();
+  }
 }
 
 // ---------- Export / Import ----------
@@ -1388,9 +1493,24 @@ function renderBackupNudge(){
 function cloudStatusTxt(){
   const c = window.rejamCloud;
   if (!c || !c.enabled) return "ulanmagan (faqat shu qurilmada)";
-  if (c.status === 'online') return "<b style='color:#7A8F5C'>Ulangan</b>";
+  if (c.status === 'online') {
+    const who = c.user && (c.user.email || c.user.name);
+    return "<b style='color:#7A8F5C'>Ulangan</b>" + (who ? " &middot; " + esc(who) : '');
+  }
   if (c.status === 'connecting') return "ulanmoqda...";
-  return "<b style='color:#B75B3D'>Xato</b>";
+  if (c.status === 'error') return "<b style='color:#B75B3D'>Xato \u2014 qayta urinilmoqda</b>";
+  return "kirilmagan";
+}
+
+// Bulut tugmasi: kirish / chiqish
+function renderCloudBtn(){
+  const c = window.rejamCloud;
+  if (!c || !c.enabled) return '';
+  if (c.status === 'connecting') return `<button class="rp-add-btn" disabled>Ulanmoqda...</button>`;
+  if (c.status === 'online') {
+    return `<button class="rp-add-btn" data-action="cloud-signout">Bulutdan chiqish</button>`;
+  }
+  return `<button class="rp-add-btn" data-action="cloud-signin">Google bilan kirish (bulut zaxira)</button>`;
 }
 
 function renderImportPreview(){
@@ -1446,9 +1566,10 @@ function renderBackupModal(){
           <div class="rp-info-row"><span>Bulut</span><span>${cloudStatusTxt()}</span></div>
         </div>
 
-        <p class="rp-note">Ma'lumot uch joyda saqlanadi: tez xotira, zaxira nusxa va IndexedDB. Bittasi o'chsa, ilova qolganidan avtomatik tiklaydi. Lekin telefon yo'qolsa yoki tozalansa &mdash; faqat tashqi zaxira qutqaradi.</p>
+        <p class="rp-note">Ma'lumot uch joyda saqlanadi: tez xotira, zaxira nusxa va IndexedDB. Bittasi o'chsa, ilova qolganidan avtomatik tiklaydi. Telefon yo'qolsa &mdash; tashqi zaxira yoki bulut qutqaradi.</p>
 
         ${renderImportPreview()}
+        ${renderCloudBtn()}
         <button class="rp-save-btn" data-action="export-data">Zaxira faylni saqlash</button>
         <button class="rp-add-btn" data-action="copy-backup">Matn sifatida nusxa olish</button>
         <button class="rp-add-btn" data-action="import-data">Zaxiradan tiklash</button>
@@ -2101,6 +2222,17 @@ const handlers = {
   'open-backup': () => { state.showBackup = true; render(); requestPersistence().then(render); },
   'close-backup': () => { state.showBackup = false; render(); },
   'export-data': () => exportData(),
+  'cloud-signin': () => {
+    const c = window.rejamCloud;
+    if (!c || !c.signIn) return;
+    render();
+    c.signIn().then(ok => { render(); toast(ok ? 'Bulutga ulandi' : 'Ulanmadi'); });
+  },
+  'cloud-signout': () => {
+    const c = window.rejamCloud;
+    if (!c || !c.signOut) return;
+    c.signOut().then(() => { render(); toast('Bulutdan chiqildi'); });
+  },
   'copy-backup': () => copyBackup(),
   'import-data': () => { const i = document.getElementById('rp-import-file'); if (i) i.click(); },
   'retry-save': () => retrySave(),
