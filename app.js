@@ -1,11 +1,13 @@
 // ==================== Constants & helpers ====================
-const CATS = [
+const BUILTIN_CATS = [
   { id: 'kontent', label: 'Kontent', color: '#C08A2E' },
   { id: 'moliya', label: 'Moliyaviy', color: '#7A8F5C' },
   { id: 'soglik', label: "Sog'liq", color: '#5B84A6' },
   { id: 'ibodat', label: 'Ibodat', color: '#8B6FA6' },
   { id: 'boshqa', label: 'Boshqa', color: '#A79C89' },
 ];
+const FALLBACK_CAT = BUILTIN_CATS[BUILTIN_CATS.length - 1];
+const CAT_PALETTE = ['#B75B3D','#4E8C7A','#9A6B4F','#6B7FA6','#A6813F','#7E6B9A','#5F8C55','#A65B72','#4F7F8C','#8C7A4F'];
 const MONTHS_UZ = ['Yanvar','Fevral','Mart','Aprel','May','Iyun','Iyul','Avgust','Sentabr','Oktabr','Noyabr','Dekabr'];
 const WEEKDAYS_SHORT = ['Du','Se','Ch','Pa','Ju','Sh','Ya'];
 const WEEKDAYS_FULL = ['Dushanba','Seshanba','Chorshanba','Payshanba','Juma','Shanba','Yakshanba'];
@@ -24,7 +26,39 @@ function uid(){ return Math.random().toString(36).slice(2,10); }
 function weekdayIdx(d){ return (d.getDay()+6)%7; }
 function getMonday(d){ return addDays(d, -weekdayIdx(d)); }
 function lastNDays(n, today){ const arr=[]; for(let i=n-1;i>=0;i--) arr.push(addDays(today,-i)); return arr; }
-function catOf(id){ return CATS.find(c=>c.id===id) || CATS[CATS.length-1]; }
+function allCats(){ return BUILTIN_CATS.concat(Array.isArray(state.categories) ? state.categories : []); }
+function catOf(id){
+  const found = allCats().find(c => c.id === id);
+  if (found) return found;
+  if (typeof id === 'string' && /^[a-z0-9_-]{1,32}$/.test(id)) return { id, label: id, color: FALLBACK_CAT.color };
+  return FALLBACK_CAT;
+}
+function nextCatColor(){
+  const used = new Set(allCats().map(c => c.color));
+  return CAT_PALETTE.find(c => !used.has(c)) || CAT_PALETTE[allCats().length % CAT_PALETTE.length];
+}
+function slugify(name){
+  const base = String(name).toLowerCase()
+    .replace(/['\u2019\u02bb\u02bc]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24);
+  return base || ('kat-' + uid().slice(0,4));
+}
+function addCategory(name){
+  const label = String(name || '').trim().slice(0, 24);
+  if (!label) return null;
+  const existing = allCats().find(c => c.label.toLowerCase() === label.toLowerCase());
+  if (existing) return existing.id;
+  const list = Array.isArray(state.categories) ? state.categories.slice() : [];
+  let id = slugify(label);
+  const taken = new Set(allCats().map(c => c.id));
+  if (taken.has(id)) id = id + '-' + uid().slice(0,3);
+  list.push({ id, label, color: nextCatColor() });
+  state.categories = list;
+  commit();
+  return id;
+}
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 
 // Pauzada o'tgan kunlar soni (yig'ilgan + hozir davom etayotgani)
@@ -177,6 +211,21 @@ function computeStats(plan, today){
     dailyTargetDisplay = Math.round(paceNow);          // jamlangan jadval: cum(1)-cum(0)
   }
 
+  // Haqiqiy sur'at bo'yicha bashorat: ortig'i bilan ishlasangiz muddat OLDINGA suriladi
+  let projectedEnd = null, aheadDays = 0;
+  if (!notStarted && !isComplete && !paused && totalDone > 0) {
+    const elapsedIncl = Math.max(activeElapsed + 1, 1);        // bugun ham hisobga olinadi
+    const actualPace = totalDone / elapsedIncl;
+    if (actualPace > 0 && Number.isFinite(actualPace)) {
+      const need = Math.ceil(remaining / actualPace);
+      if (Number.isFinite(need) && need >= 0 && need < 4000) {
+        const cand = addDays(today, need);
+        const gap = daysBetween(cand, dynamicEnd);
+        if (gap >= 1) { projectedEnd = cand; aheadDays = gap; }
+      }
+    }
+  }
+
   const isPastDeadline = daysBetween(today, dynamicEnd) < 0 && !isComplete;
 
   let status = 'ontrack';
@@ -192,7 +241,7 @@ function computeStats(plan, today){
 
   return {
     totalDone, outsideDone, remaining, dailyTargetDisplay, doneToday,
-    dynamicEnd, extraDays, isComplete, isPastDeadline, notStarted, paused,
+    dynamicEnd, extraDays, isComplete, isPastDeadline, notStarted, paused, projectedEnd, aheadDays,
     status, pauseDays, paceNow,
     progressPct: Number.isFinite(progressPct) ? progressPct : 0,
     expectedPct: Number.isFinite(expectedPct) ? expectedPct : 0,
@@ -217,6 +266,9 @@ let state = {
   plans: [],
   tasks: [],
   ideas: [],
+  categories: [],
+  newCatName: '',
+  showNewCat: false,
   expandedPlanId: null,
   confirmDeleteId: null,
   showAddPlan: false,
@@ -239,6 +291,7 @@ let state = {
   undo: null,
   storagePersisted: null,
   pulses: {},
+  celebration: null,
   selectedDayKey: toKey(new Date()),
   reportPeriod: 'week',
 };
@@ -253,7 +306,7 @@ function safeParse(s, fallback){ try { return s ? JSON.parse(s) : fallback; } ca
 // Prinsip: IndexedDB kanonik manba. localStorage tezkor cache/fallback.
 // Bo'shlik hech qachon "authority" emas - faqat revision hal qiladi.
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const DB_NAME = 'rejam-db', DB_STORE = 'kv';
 const IDB_MAIN = 'snapshot-v3';
 const IDB_PRE_MIGRATION = 'pre-migration-v2';
@@ -496,11 +549,28 @@ function validateEnvelope(raw){
   if (!rp && !rt && !ri) return { ok:false, issues:['Ichida plans/tasks/ideas ro\'yxati yo\'q'] };
   if (rp && rp.length > 5000) return { ok:false, issues:['Juda katta fayl (5000+ reja)'] };
 
+  // Kategoriyalar rejalardan OLDIN tiklanadi - catOf ular haqida bilishi kerak
+  const cats = [];
+  if (Array.isArray(raw.categories)) {
+    const seenCat = new Set(BUILTIN_CATS.map(c => c.id));
+    for (const c of raw.categories) {
+      if (!c || typeof c !== 'object') continue;
+      const cid = String(c.id || '');
+      const label = cleanText(c.label, 24).trim();
+      if (!/^[a-z0-9_-]{1,32}$/.test(cid) || !label || seenCat.has(cid)) continue;
+      seenCat.add(cid);
+      cats.push({ id: cid, label, color: /^#[0-9a-fA-F]{6}$/.test(c.color) ? c.color : FALLBACK_CAT.color });
+    }
+  }
+  const prevCats = state.categories;
+  state.categories = cats;
+
   const seen = new Set();
   const plans = (rp || []).map(x => validatePlan(x, seen, issues)).filter(Boolean);
   const tasks = (rt || []).map(x => validateTask(x, seen, issues)).filter(Boolean);
   const ideas = (ri || []).map(x => validateIdea(x, seen, issues)).filter(Boolean);
 
+  state.categories = prevCats;
   const revision = finiteNum(raw.revision);
   const updatedAt = finiteNum(raw.updatedAt) || finiteNum(raw.savedAt) || 0;
   return {
@@ -511,7 +581,7 @@ function validateEnvelope(raw){
       revision: revision === null || revision < 0 ? 0 : Math.floor(revision),
       updatedAt,
       deviceId: cleanText(raw.deviceId, 64) || deviceId(),
-      plans, tasks, ideas,
+      plans, tasks, ideas, categories: cats,
     },
     counts: countsOf({ plans, tasks, ideas }),
   };
@@ -541,7 +611,7 @@ function currentEnvelope(bumpRevision){
     revision: revisionCounter,
     updatedAt: Date.now(),
     deviceId: deviceId(),
-    plans: state.plans, tasks: state.tasks, ideas: state.ideas,
+    plans: state.plans, tasks: state.tasks, ideas: state.ideas, categories: state.categories,
   };
 }
 
@@ -598,6 +668,7 @@ window.rejamLocalSavedAt = function(){ return revisionCounter; };
 window.rejamApplyRemote = function(remote){
   const v = validateEnvelope(remote);
   if (!v.ok) return;
+  state.categories = v.envelope.categories || [];
   state.plans = v.envelope.plans;
   state.tasks = v.envelope.tasks;
   state.ideas = v.envelope.ideas;
@@ -679,6 +750,7 @@ async function bootstrapStorage(){
   const best = pickBest(cands);
 
   if (best) {
+    state.categories = best.env.categories || [];
     state.plans = best.env.plans;
     state.tasks = best.env.tasks;
     state.ideas = best.env.ideas;
@@ -805,6 +877,7 @@ async function confirmImport(){
 
   // 4) Faqat endi UI holatini almashtiramiz
   state.plans = env.plans; state.tasks = env.tasks; state.ideas = env.ideas;
+  state.categories = env.categories || [];
   try { localStorage.setItem(LS_ENVELOPE, JSON.stringify(toWrite)); } catch(e){}
   state.importPreview = null;
   state.showBackup = false;
@@ -879,10 +952,10 @@ function toast(msg){
 }
 
 function freshPlanDraft(today){
-  return { name:'', category: CATS[0].id, target:'', unit:'ta', startDate: toKey(today), endDate: toKey(addDays(today,29)), mode:'flatten', why:'' };
+  return { name:'', category: BUILTIN_CATS[0].id, target:'', unit:'ta', startDate: toKey(today), endDate: toKey(addDays(today,29)), mode:'flatten', why:'' };
 }
 function freshTaskDraft(defaultDate){
-  return { text:'', category: CATS[0].id, type:'once', date: defaultDate, weekdays: [] };
+  return { text:'', category: BUILTIN_CATS[0].id, type:'once', date: defaultDate, weekdays: [] };
 }
 
 // ==================== Actions ====================
@@ -1086,24 +1159,62 @@ function editPlan(id){
   render();
 }
 
+const celebratedOver = new Set();
+let celebrationTimer = null;
+
+function celebrate(planId, kind){
+  state.celebration = { planId, kind, at: Date.now() };
+  clearTimeout(celebrationTimer);
+  celebrationTimer = setTimeout(() => { state.celebration = null; render(); }, kind === 'over' ? 1600 : 1100);
+}
+
 function logAmount(planId, amount){
+  logAmountOn(planId, amount, toKey(new Date()));
+}
+
+function logAmountOn(planId, amount, dateKey){
   const today = new Date();
-  const key = toKey(today);
-  state.plans = state.plans.map(p=>{
-    if (p.id!==planId) return p;
-    const log = { ...(p.log||{}) };
-    log[key] = Number(log[key]||0) + amount;
-    if (log[key] <= 0) delete log[key];
+  const todayKey = toKey(today);
+  if (!isValidDateKey(dateKey) || dateKey > todayKey) return;    // kelajakka yozib bo'lmaydi
+
+  const plan = state.plans.find(p => p.id === planId);
+  if (!plan) return;
+  const stats = computeStats(plan, today);
+  const before = Number((plan.log || {})[dateKey] || 0);
+  const dayTarget = stats.dailyTargetDisplay;
+
+  state.plans = state.plans.map(p => {
+    if (p.id !== planId) return p;
+    const log = { ...(p.log || {}) };
+    log[dateKey] = Number(log[dateKey] || 0) + amount;
+    if (log[dateKey] <= 0) delete log[dateKey];
     return { ...p, log };
   });
   persistPlans();
-  if (amount>0){
+
+  if (amount > 0) {
     state.pulses[planId] = Date.now();
+    const after = before + amount;
+    const ck = planId + ':' + dateKey;
+    if (dateKey === todayKey && dayTarget > 0) {
+      if (after > dayTarget && !celebratedOver.has(ck)) { celebratedOver.add(ck); celebrate(planId, 'over'); }
+      else if (before < dayTarget && after >= dayTarget) celebrate(planId, 'done');
+    }
     render();
-    setTimeout(()=>{ delete state.pulses[planId]; render(); }, 750);
+    setTimeout(() => { delete state.pulses[planId]; render(); }, 750);
     return;
   }
   render();
+}
+
+// Berilgan kunda faol bo'lgan rejalar
+function plansForDay(dateKey, today){
+  return state.plans.filter(p => {
+    if (dateKey < p.startDate) return false;
+    const st = computeStats(p, today);
+    if (st.isComplete || st.paused || st.notStarted) return false;
+    return dateKey <= toKey(st.dynamicEnd);
+  });
 }
 
 function addTask(){
@@ -1481,6 +1592,7 @@ function renderPlanCard(plan, today){
         <button class="rp-btn-round" data-action="log-amount" data-id="${esc(plan.id)}" data-amount="-1" ${stats.doneToday<=0?'disabled':''}>−</button>
         <div class="rp-plus-wrap">
           ${state.pulses[plan.id] ? `<span class="rp-float-plus">+1</span>` : ''}
+          ${renderCelebration(plan.id)}
           <button class="rp-btn-round rp-btn-primary" style="background:${esc(cat.color)}" data-action="log-amount" data-id="${esc(plan.id)}" data-amount="1">+1</button>
         </div>
       </div>
@@ -1525,7 +1637,9 @@ function renderPlanCard(plan, today){
         <span>${Math.round(stats.progressPct)}%</span>
       </div>
       ${streakChip}
+      ${stats.projectedEnd ? `<div class="rp-projected">Shu sur'atda ~${fmtUz(stats.projectedEnd)}da tugaydi &mdash; muddatdan ${stats.aheadDays} kun erta</div>` : ''}
       ${todayRow}
+      ${renderCelebrationMsg(plan.id)}
       ${expandedHtml}
     </div>`;
 }
@@ -1542,6 +1656,21 @@ function renderHistory(plan, today, color){
   return html;
 }
 
+function renderCatPills(selected, kind){
+  const act = kind === 'plan' ? 'set-plan-field' : 'set-task-field';
+  const pills = allCats().map(c => `
+    <button class="rp-pill${selected===c.id?' rp-pill-active':''}" style="${selected===c.id?`border-color:${esc(c.color)};color:${esc(c.color)}`:''}"
+      data-action="${act}" data-field="category" data-value="${esc(c.id)}">${esc(c.label)}</button>`).join('');
+  const adder = state.showNewCat
+    ? `<div class="rp-newcat">
+         <input id="f-new-cat" class="rp-newcat-input" data-draft="newcat" value="${esc(state.newCatName)}" placeholder="Kategoriya nomi" maxlength="24" />
+         <button class="rp-newcat-ok" data-action="save-category" data-kind="${esc(kind)}">Qo'sh</button>
+         <button class="rp-newcat-x" data-action="cancel-category">&#10005;</button>
+       </div>`
+    : `<button class="rp-pill rp-pill-add" data-action="open-new-cat">+ Yangi</button>`;
+  return pills + adder;
+}
+
 function renderAddPlanModal(today){
   if (!planDraft.__init) { planDraft = { ...freshPlanDraft(today), __init:true }; }
   const d = planDraft;
@@ -1554,7 +1683,7 @@ function renderAddPlanModal(today){
         </label>
         <div class="rp-field"><span>Kategoriya</span>
           <div class="rp-pill-row">
-            ${CATS.map(c=>`<button class="rp-pill${d.category===c.id?' rp-pill-active':''}" style="${d.category===c.id?`border-color:${c.color};color:${c.color}`:''}" data-action="set-plan-field" data-field="category" data-value="${esc(c.id)}">${c.label}</button>`).join('')}
+            ${renderCatPills(d.category, 'plan')}
           </div>
         </div>
         <div class="rp-field-row">
@@ -1627,9 +1756,73 @@ function renderDailyTab(){
       </div>
       ${dayTasks.length>0 ? `<div class="dp-day-count">${doneCount}/${dayTasks.length}</div>` : ''}
     </div>
+    ${renderDayPlans(state.selectedDayKey, new Date())}
+    <div class="dp-section-label">Vazifalar</div>
     <div class="dp-task-list">${taskRows}</div>
     <button class="rp-add-btn" data-action="open-add-task">+ Yangi vazifa</button>
   `;
+}
+
+function renderDayPlans(dateKey, today){
+  const todayKey = toKey(today);
+  if (dateKey > todayKey) return '';                 // kelajak kunga reja ishi ko'rsatilmaydi
+  const plans = plansForDay(dateKey, today);
+  if (!plans.length) return '';
+  const isToday = dateKey === todayKey;
+
+  const rows = plans.map(p => {
+    const cat = catOf(p.category);
+    const st = computeStats(p, today);
+    const done = Number((p.log || {})[dateKey] || 0);
+    const label = isToday
+      ? `<b>${Math.round(done*10)/10}</b> / ${st.dailyTargetDisplay} ${esc(p.unit)}`
+      : `<b>${Math.round(done*10)/10}</b> ${esc(p.unit)}`;
+    const hit = isToday && st.dailyTargetDisplay > 0 && done >= st.dailyTargetDisplay;
+    return `
+      <div class="dp-plan-row${hit ? ' dp-plan-hit' : ''}">
+        <span class="rp-cat-dot" style="background:${esc(cat.color)}"></span>
+        <div class="dp-plan-body">
+          <div class="dp-plan-name">${esc(p.name)}${hit ? ' <span class="dp-plan-check">&#10003;</span>' : ''}</div>
+          <div class="dp-plan-num">${label}</div>
+        </div>
+        <div class="dp-plan-actions">
+          <button class="rp-btn-round" data-action="log-on" data-id="${esc(p.id)}" data-date="${esc(dateKey)}" data-amount="-1" ${done<=0?'disabled':''}>&minus;</button>
+          <div class="rp-plus-wrap">
+            ${state.pulses[p.id] ? `<span class="rp-float-plus">+1</span>` : ''}
+            ${renderCelebration(p.id)}
+            <button class="rp-btn-round rp-btn-primary" style="background:${esc(cat.color)}" data-action="log-on" data-id="${esc(p.id)}" data-date="${esc(dateKey)}" data-amount="1">+1</button>
+          </div>
+        </div>
+      </div>
+      ${renderCelebrationMsg(p.id)}`;
+  }).join('');
+
+  return `<div class="dp-section-label">${isToday ? 'Bugungi reja ishlari' : 'Reja ishlari'}${isToday ? '' : ' — yozib qo\'yish mumkin'}</div>
+    <div class="dp-plan-list">${rows}</div>`;
+}
+
+// Zarrachalar - tugma ustida
+function renderCelebration(planId){
+  const c = state.celebration;
+  if (!c || c.planId !== planId || c.kind !== 'over') return '';
+  const angles = [0, 36, 72, 108, 144, 180, 216, 252, 288, 324];
+  const parts = angles.map((a, i) => {
+    const rad = a * Math.PI / 180;
+    const dist = 30 + (i % 3) * 10;
+    const x = Math.round(Math.cos(rad) * dist);
+    const y = Math.round(Math.sin(rad) * dist);
+    return `<i class="rp-cel-dot" style="--dx:${x}px; --dy:${y}px; background:${CAT_PALETTE[i % CAT_PALETTE.length]}; animation-delay:${i*18}ms"></i>`;
+  }).join('');
+  return `<span class="rp-cel">${parts}</span>`;
+}
+
+// Yozuv - alohida to'liq kenglikdagi qator, hech qachon chetdan chiqmaydi
+function renderCelebrationMsg(planId){
+  const c = state.celebration;
+  if (!c || c.planId !== planId) return '';
+  return c.kind === 'over'
+    ? `<div class="rp-cel-bar">Me'yordan oshdingiz!</div>`
+    : `<div class="rp-cel-bar rp-cel-quiet">Bugungi me'yor bajarildi</div>`;
 }
 
 function renderTaskRow(t, dateKey){
@@ -1667,7 +1860,7 @@ function renderAddTaskModal(){
         <label class="rp-field"><span>Vazifa</span><input id="f-task-text" data-draft="task" data-field="text" value="${esc(d.text)}" placeholder="Masalan: Video montaj qilish" /></label>
         <div class="rp-field"><span>Kategoriya</span>
           <div class="rp-pill-row">
-            ${CATS.map(c=>`<button class="rp-pill${d.category===c.id?' rp-pill-active':''}" style="${d.category===c.id?`border-color:${c.color};color:${c.color}`:''}" data-action="set-task-field" data-field="category" data-value="${esc(c.id)}">${c.label}</button>`).join('')}
+            ${renderCatPills(d.category, 'task')}
           </div>
         </div>
         <div class="rp-field"><span>Turi</span>
@@ -1915,6 +2108,19 @@ const handlers = {
   'cancel-import': () => { state.importPreview = null; render(); },
   'revert-import': () => revertImport(),
   'set-plan-field': (btn) => { planDraft[btn.dataset.field] = btn.dataset.value; render(); },
+  'open-new-cat': () => { state.showNewCat = true; state.newCatName = ''; render(); },
+  'cancel-category': () => { state.showNewCat = false; state.newCatName = ''; render(); },
+  'save-category': (btn) => {
+    const el = document.getElementById('f-new-cat');
+    const name = ((el && el.value) || state.newCatName || '').trim();
+    if (!name) return;
+    const id = addCategory(name);
+    if (!id) return;
+    if (btn.dataset.kind === 'plan') planDraft.category = id; else taskDraft.category = id;
+    state.showNewCat = false; state.newCatName = '';
+    render();
+    toast("Kategoriya qo'shildi");
+  },
   'save-plan': () => addPlan(),
   'force-save-plan': () => { state.confirmEdit = true; addPlan(); },
   'dismiss-edit-warning': () => { state.editWarning = null; state.confirmEdit = false; state.pendingPlanEdit = null; render(); },
@@ -1923,6 +2129,7 @@ const handlers = {
   'cancel-delete-plan': () => { state.confirmDeleteId = null; render(); },
   'confirm-delete-plan': (btn) => deletePlan(btn.dataset.id),
   'log-amount': (btn) => logAmount(btn.dataset.id, Number(btn.dataset.amount)),
+  'log-on': (btn) => logAmountOn(btn.dataset.id, Number(btn.dataset.amount), btn.dataset.date),
 
   'open-add-task': () => { state.editingTaskId = null; state.convertingIdeaId = null; taskDraft = { ...freshTaskDraft(state.selectedDayKey), __init:true }; state.showAddTask = true; render(); },
   'set-task-field': (btn) => { taskDraft[btn.dataset.field] = btn.dataset.value; render(); },
@@ -1957,7 +2164,8 @@ document.addEventListener('click', (e) => {
 
 document.addEventListener('input', (e) => {
   const el = e.target;
-  if (el.dataset && el.dataset.draft === 'idea') ideaDraft = el.value;
+  if (el.dataset && el.dataset.draft === 'newcat') state.newCatName = el.value;
+  else if (el.dataset && el.dataset.draft === 'idea') ideaDraft = el.value;
   else if (el.dataset && el.dataset.draft === 'plan') planDraft[el.dataset.field] = el.value;
   else if (el.dataset && el.dataset.draft === 'task') taskDraft[el.dataset.field] = el.value;
 });
