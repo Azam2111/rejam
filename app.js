@@ -278,6 +278,8 @@ let state = {
   cloudMode: 'signin',       // signin | signup
   cloudEmail: '',            // parol HECH QACHON state'ga yozilmaydi
   cloudNote: null,
+  scan: null,
+  scanning: false,
   saveError: null,
   pendingEnvelope: null,
   readErrors: [],
@@ -354,6 +356,16 @@ function idbGet(key){
     const r = tx.objectStore(DB_STORE).get(key);
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error || new Error('o\'qib bo\'lmadi'));
+  }));
+}
+
+function idbKeys(){
+  return idbOpen().then(db => new Promise((res, rej) => {
+    let tx;
+    try { tx = db.transaction(DB_STORE, 'readonly'); } catch(e){ return rej(e); }
+    const r = tx.objectStore(DB_STORE).getAllKeys();
+    r.onsuccess = () => res(Array.from(r.result || []));
+    r.onerror = () => rej(r.error || new Error('kalitlar o\'qilmadi'));
   }));
 }
 
@@ -892,6 +904,99 @@ async function bootstrapStorage(){
     cloud.onChange = () => { if (state.showBackup) render(); };
     if (cloud.resume) cloud.resume();
   }
+}
+
+// ---------- Tashxis: xotirada aslida nima bor ----------
+// Ma'lumot yo'qolganday ko'ringanda ilova nimani ko'rayotganini yashirmasligi kerak.
+// Bu yerda HAR BIR saqlash qatlami va HAR BIR tiklash nuqtasi ochiq ko'rsatiladi.
+function envCounts(env){
+  const n = a => Array.isArray(a) ? a.length : 0;
+  let logs = 0;
+  for (const p of (Array.isArray(env && env.plans) ? env.plans : [])) {
+    logs += Object.keys((p && p.log) || {}).length;
+  }
+  return { plans: n(env && env.plans), tasks: n(env && env.tasks), ideas: n(env && env.ideas), logs };
+}
+
+async function scanStorage(){
+  const rows = [];
+  const add = (source, where, raw) => {
+    if (!raw || typeof raw !== 'object') return;
+    const c = envCounts(raw);
+    rows.push({
+      source, where, counts: c,
+      total: c.plans + c.tasks + c.ideas,
+      updatedAt: Number(raw.updatedAt) || Number(raw.savedAt) || 0,
+      raw,
+    });
+  };
+
+  // 1. IndexedDB - HAMMA kalit, jumladan tiklash nuqtalari
+  try {
+    const keys = await idbKeys();
+    for (const k of keys) {
+      try {
+        const v = await idbGet(k);
+        if (!v || typeof v !== 'object') continue;
+        if (v.plans || v.tasks || v.ideas) add(String(k), 'IndexedDB', v);
+        if (Array.isArray(v.rivals)) v.rivals.forEach((r, i) => add(String(k) + ' #' + (i + 1), 'IndexedDB', r && r.env));
+      } catch(e){ rows.push({ source:String(k), where:'IndexedDB', error:(e.message || String(e)) }); }
+    }
+  } catch(e){
+    rows.push({ source:'IndexedDB ochilmadi', where:'IndexedDB', error:(e.message || String(e)) });
+  }
+
+  // 2. localStorage - yangi va eski kalitlar
+  try {
+    add(LS_ENVELOPE, 'localStorage', safeParse(localStorage.getItem(LS_ENVELOPE), null));
+    add(LEGACY_KEYS.backup, 'localStorage', safeParse(localStorage.getItem(LEGACY_KEYS.backup), null));
+    const lp = safeParse(localStorage.getItem(LEGACY_KEYS.plans), null);
+    const lt = safeParse(localStorage.getItem(LEGACY_KEYS.tasks), null);
+    const li = safeParse(localStorage.getItem(LEGACY_KEYS.ideas), null);
+    if (lp || lt || li) add('eski uchta kalit', 'localStorage', { plans: lp || [], tasks: lt || [], ideas: li || [] });
+  } catch(e){
+    rows.push({ source:'localStorage', where:'localStorage', error:(e.message || String(e)) });
+  }
+
+  rows.sort((a, b) => (b.total || 0) - (a.total || 0) || (b.updatedAt || 0) - (a.updatedAt || 0));
+  return rows;
+}
+
+async function runScan(){
+  state.scanning = true; render();
+  try { state.scan = await scanStorage(); }
+  catch(e){ state.scan = [{ source:'skanerlash', where:'-', error:(e.message || String(e)) }]; }
+  state.scanning = false;
+  render();
+}
+
+// Topilgan nusxadan tiklash - odatdagi ikki bosqichli import darvozasidan o'tadi
+function restoreFromScan(idx){
+  const row = (state.scan || [])[Number(idx)];
+  if (!row || !row.raw) return;
+  prepareImport(JSON.stringify(row.raw));
+}
+
+function renderDiagnostics(){
+  const rows = state.scan;
+  return `
+    <div class="rp-diag">
+      <button class="rp-link-btn" data-action="scan-storage">${state.scanning ? 'Tekshirilmoqda...' : 'Xotirani tekshirish'}</button>
+      ${state.readErrors && state.readErrors.length
+        ? `<div class="rp-cloud-err">${state.readErrors.map(e => esc(e)).join('<br>')}</div>` : ''}
+      ${!rows ? '' : (!rows.length
+        ? `<div class="rp-cloud-err">Xotirada hech qanday nusxa topilmadi.</div>`
+        : `<div class="rp-diag-list">
+             ${rows.map((r, i) => r.error
+               ? `<div class="rp-diag-row rp-diag-bad"><b>${esc(r.source)}</b><span>xato: ${esc(r.error)}</span></div>`
+               : `<div class="rp-diag-row">
+                    <div class="rp-diag-top"><b>${esc(r.source)}</b><span>${esc(r.where)}</span></div>
+                    <div class="rp-diag-num">${r.counts.plans} reja &middot; ${r.counts.tasks} vazifa &middot; ${r.counts.ideas} fikr &middot; ${r.counts.logs} yozuv</div>
+                    ${r.updatedAt ? `<div class="rp-diag-num">${esc(fmtUz(new Date(r.updatedAt)))}</div>` : ''}
+                    ${r.total > 0 ? `<button class="rp-link-btn" data-action="restore-scan" data-idx="${i}">Shu nusxadan tiklash</button>` : ''}
+                  </div>`).join('')}
+           </div>`)}
+    </div>`;
 }
 
 // ---------- Export / Import ----------
@@ -1651,6 +1756,7 @@ function renderBackupModal(){
         ${state.canRevertImport ? `<button class="rp-add-btn rp-revert-btn" data-action="revert-import">Importdan oldingi holatga qaytish</button>` : ''}
         <input type="file" id="rp-import-file" accept="application/json,.json,text/plain" hidden />
         <p class="rp-note rp-note-small">Tiklash hozirgi ma'lumotning ustiga yozadi \u2014 avval nima almashishini ko'rasiz.</p>
+        ${renderDiagnostics()}
       </div>
     </div>`;
 }
@@ -2331,6 +2437,8 @@ const handlers = {
       render();
     });
   },
+  'scan-storage': () => runScan(),
+  'restore-scan': (btn) => restoreFromScan(btn.dataset.idx),
   'cloud-force': () => {
     const c = window.rejamCloud;
     if (!c || !c.forcePush) return;

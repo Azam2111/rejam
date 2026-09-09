@@ -333,3 +333,17 @@ body {
 .rp-srv-row{ display:flex; justify-content:space-between; align-items:baseline; font-size:13.5px; color:#5C5140; padding:2px 0; }
 .rp-srv-row b{ font-variant-numeric:tabular-nums; color:#3D3527; }
 .rp-srv-row b.rp-srv-bad{ color:#B75B3D; }
+
+
+/* ---------- Tashxis ---------- */
+.rp-diag{ border-top:1px solid #E6DFD2; margin-top:16px; padding-top:10px; }
+.rp-diag-list{ margin-top:8px; }
+.rp-diag-row{ border:1px solid #E6DFD2; border-radius:11px; padding:9px 11px; margin-bottom:7px; background:#FBF8F2; }
+.rp-diag-row.rp-diag-bad{ background:#F7E7E1; border-color:#E4C6BB; display:flex; flex-direction:column; gap:3px; }
+.rp-diag-top{ display:flex; justify-content:space-between; gap:8px; align-items:baseline; }
+.rp-diag-top b{ font-size:13px; color:#3D3527; word-break:break-all; }
+.rp-diag-top span{ font-size:11.5px; color:#A08F76; white-space:nowrap; }
+.rp-diag-num{ font-size:12.5px; color:#7A6D58; margin-top:3px; font-variant-numeric:tabular-nums; }
+.rp-diag-row .rp-link-btn{ padding:6px 0 0; font-size:13px; }
+.rp-diag-bad b{ font-size:13px; color:#9B3F26; }
+.rp-diag-bad span{ font-size:12.5px; color:#9B3F26; }
