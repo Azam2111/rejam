@@ -1974,8 +1974,9 @@ function renderTabbar(){
   const tabs = [['rejalar','Rejalar'], ['kunlik','Kunlik'], ['kontent','Kontent'], ['hisobot','Hisobot'], ['fikrlar','Fikrlar']];
   return `<div class="rp-tabbar">
     ${tabs.map(([id,label]) => {
-      const badge = (id==='fikrlar' && n>0 && state.tab!=='fikrlar') ? `<i class="rp-badge">${n}</i>` : '';
-      return `<button class="rp-tab${state.tab===id?' rp-tab-active':''}" data-action="set-tab" data-tab="${id}">${label}${badge}</button>`;
+      const hasBadge = (id==='fikrlar' && n>0 && state.tab!=='fikrlar');
+      const badge = hasBadge ? `<i class="rp-badge">${n > 99 ? '99+' : n}</i>` : '';
+      return `<button class="rp-tab${state.tab===id?' rp-tab-active':''}${hasBadge?' rp-tab-has-badge':''}" data-action="set-tab" data-tab="${id}">${label}${badge}</button>`;
     }).join('')}
   </div>`;
 }
