@@ -84,6 +84,85 @@ function serve(port){
     "Salom.\nBirinchi uzun matn bu yerda turibdi va ancha uzun\nIkkinchi uzun matn ham shunday uzun bo'ladi\nUchinchi uzun ham")));
   check('nuqta bilan tugagan qisqa qator sarlavha emas', h.header === null, JSON.stringify(h.header));
 
+  group('SHEET KO\'PRIGI: Reels varag\'idan o\'qish');
+  await clear();
+  const sheetRows = [
+    "ID\tHook\tLokatsiya\tStatus",
+    "R012\t3 ta arabcha so'z: kitob, qalam, daftar\tAzhar masjidi\tSsenariy",
+    "R015\tFe'l nima? Oddiy tushuntirish\tAzhar masjidi\tOlindi",
+    "R020\tTalabalarim eng ko'p qiladigan xato\tStudiya\tMontaj tayyor",
+  ].join('\n');
+
+  let rr = await page.evaluate((d) => parseReelRows(d), sheetRows);
+  check('qatorlar o\'qiladi', rr.filter(x=>!x.skipped).length === 3, JSON.stringify(rr.length));
+  check('sarlavha qatori tashlanadi va e\'lon qilinadi', rr.some(x=>x.skipped), JSON.stringify(rr.filter(x=>x.skipped)));
+  const r12 = rr.find(x => x.ref === 'R012');
+  check('reel ID topiladi', !!r12, JSON.stringify(rr.map(x=>x.ref)));
+  check('sarlavha ID emas, hook bo\'ladi', r12 && /arabcha/.test(r12.title), JSON.stringify(r12));
+  check('status "Ssenariy" -> 1-bosqich', r12 && r12.stage === 1, JSON.stringify(r12));
+  check('status "Olindi" -> 2-bosqich', rr.find(x=>x.ref==='R015').stage === 2);
+  check('status "Montaj tayyor" -> 3-bosqich', rr.find(x=>x.ref==='R020').stage === 3);
+
+  await page.evaluate((d) => prepareReelImport(d), sheetRows);
+  await page.waitForTimeout(200);
+  let rpv = await page.evaluate(() => state.reelPreview);
+  check('ko\'rib chiqish chiqadi, darhol yozmaydi', rpv && rpv.fresh.length >= 3);
+  check('tasdiqlanmaguncha kontent qo\'shilmaydi', await page.evaluate(() => state.posts.length) === 0);
+
+  await page.evaluate(() => confirmReelImport());
+  await page.waitForTimeout(250);
+  const posts = await page.evaluate(() => state.posts);
+  check('kontent qo\'shiladi', posts.length === 3, String(posts.length));
+  const p12 = posts.find(x => x.ref === 'R012');
+  const p20 = posts.find(x => x.ref === 'R020');
+  check('R012: faqat matn tayyor', !!p12.matnAt && !p12.videoAt && !p12.montajAt, JSON.stringify(p12));
+  check('R020: uchala bosqich ham tayyor', !!p20.matnAt && !!p20.videoAt && !!p20.montajAt, JSON.stringify(p20));
+
+  // Qayta qo'yganda takrorlanmasin
+  await page.evaluate((d) => prepareReelImport(d), sheetRows);
+  await page.waitForTimeout(200);
+  rpv = await page.evaluate(() => state.reelPreview);
+  check('qayta qo\'yganda takrorlar o\'tkazib yuboriladi', rpv.fresh.length === 0 && rpv.dup === 3, JSON.stringify({f:rpv.fresh.length,d:rpv.dup}));
+  await page.evaluate(() => { state.reelPreview = null; });
+
+  group('SHEET KO\'PRIGI: hisobot matni');
+  await page.evaluate(() => {
+    const today = toKey(new Date());
+    const now = Date.now();
+    // R012 ni bugun oldik, R015 ni bugun montaj qildik
+    state.posts = state.posts.map(p => {
+      if (p.ref === 'R012') return Object.assign({}, p, { videoAt: now });
+      if (p.ref === 'R015') return Object.assign({}, p, { montajAt: now });
+      return p;
+    });
+    return commit();
+  });
+  await page.waitForTimeout(200);
+  const rep = await page.evaluate(() => reportForDay(toKey(new Date())));
+  check('hisobotda "olindi" bo\'limi bor', /R012 olindi/.test(rep.text), rep.text);
+  check('hisobotda "montaj tayyor" bo\'limi bor', /R015 montaj tayyor/.test(rep.text), rep.text);
+  check('jadvaldan kelgan bosqich hisobotga TUSHMAYDI', !/R020/.test(rep.text), rep.text);
+  check('jadvaldan kelgan bosqich hisobotga TUSHMAYDI', !/R020/.test(rep.text), rep.text);
+  check('sana bilan boshlanadi', /^\d{4}-\d{2}-\d{2}:/.test(rep.text), rep.text);
+  check('bugun tegilmagan R020 hisobotga tushmaydi', !/R020/.test(rep.text), rep.text);
+
+  const repOld = await page.evaluate(() => reportForDay('2020-01-01'));
+  check('boshqa kunda bo\'sh hisobot', repOld.text === '', repOld.text);
+
+  group('SHEET KO\'PRIGI: ekran');
+  await page.evaluate(() => { state.tab = 'kontent'; render(); });
+  let bui = await page.evaluate(() => document.body.innerText);
+  check('"Jadvaldan ro\'yxat olish" tugmasi bor', /Jadvaldan ro'yxat olish/.test(bui));
+  check('"Jadval uchun hisobot" tugmasi bor', /Jadval uchun hisobot/.test(bui));
+  check('reel ID kartada ko\'rinadi', /R012/.test(bui));
+  check('hisobot tayyorligi bilinadi', /tayyor/.test(bui));
+
+  await page.evaluate(() => { state.showReport = true; state.reportDate = toKey(new Date()); render(); });
+  await page.waitForTimeout(200);
+  bui = await page.evaluate(() => document.body.innerText);
+  check('hisobot oynasida matn ko\'rinadi', /R012 olindi/.test(bui), bui.slice(0,300));
+  await page.evaluate(() => { state.showReport = false; render(); });
+
   group('WORD HUJJATIDAN NUSXA (ko\'p qatorli matnlar)');
   // Asosiy xavf: bitta reels matni bir necha qatordan iborat.
   // Har qatorga bo'linib ketmasligi kerak.
