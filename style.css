@@ -410,3 +410,27 @@ body {
 /* Besh tab + belgi: yozuv qirqilmasligi uchun */
 .rp-tabbar { padding:4px 3px; }
 .rp-tab-has-badge { padding-right:9px; }
+
+/* ---------- Matn zaxirasi ---------- */
+.rp-bank { display:flex; align-items:center; gap:12px; background:#FFFCF6; border:1px solid #EBDFC7; border-radius:16px; padding:13px 15px; margin-top:12px; }
+.rp-bank-empty { flex-direction:column; align-items:stretch; gap:10px; border-style:dashed; border-color:#DCCBA9; background:#FBF8F2; }
+.rp-bank-empty .rp-bank-text { font-size:13px; color:#8A7259; line-height:1.45; }
+.rp-bank-nums { flex:1; display:flex; align-items:baseline; gap:8px; min-width:0; }
+.rp-bank-big { font-family:'Fraunces',serif; font-weight:700; font-size:27px; line-height:1; }
+.rp-bank-lbl { font-size:12.5px; color:#5A4B3A; line-height:1.35; }
+.rp-bank-lbl i { font-style:normal; font-size:11.5px; color:#A08F76; }
+.rp-bank-btn { flex-shrink:0; background:#C08A2E; color:#FFFCF6; border:none; padding:11px 16px; border-radius:11px; font-family:'Fraunces',serif; font-weight:600; font-size:14px; cursor:pointer; transition: transform .15s cubic-bezier(.34,1.56,.64,1); }
+.rp-bank-btn:active { transform: scale(0.94); }
+.rp-bank-btn:disabled { opacity:0.4; }
+
+/* ---------- Import: usul va namunalar ---------- */
+.rp-mode-label { font-size:12.5px; color:#8A7259; margin:14px 0 7px; }
+.rp-mode-hint { font-size:12px; color:#A08F76; margin:7px 0 4px; }
+.rp-sample-title { font-size:12.5px; color:#5A4B3A; font-weight:600; margin:13px 0 7px; }
+.rp-sample { display:flex; gap:8px; align-items:flex-start; background:#FFFCF6; border:1px solid #EBDFC7; border-radius:10px; padding:8px 10px; margin-bottom:6px; }
+.rp-sample span { flex-shrink:0; width:18px; height:18px; border-radius:50%; background:#EFE4D2; color:#8A7259; font-size:11px; display:flex; align-items:center; justify-content:center; }
+.rp-sample div { font-size:12.5px; color:#3A2A1C; line-height:1.45; white-space:pre-wrap; word-break:break-word; }
+
+/* ---------- Matn ber ---------- */
+.rp-pick-count { font-size:12.5px; color:#A08F76; margin-bottom:9px; }
+.rp-pick-text { font-size:15px; color:#3A2A1C; line-height:1.55; white-space:pre-wrap; word-break:break-word; background:#FBF8F2; border:1px solid #EBDFC7; border-radius:12px; padding:13px 14px; margin-bottom:14px; }

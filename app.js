@@ -122,6 +122,51 @@ function parseTable(raw){
   return rows.filter(r => r.some(c => c.trim()));
 }
 
+// Word hujjatidan nusxa olinganda ustun-qator bo'lmaydi - oddiy matn keladi.
+// Bitta reels matni bir necha qatordan iborat bo'ladi, shuning uchun uni
+// har qatorga bo'lish XATO. Uch usul bor, ilova o'zi taxmin qiladi,
+// lekin foydalanuvchi qo'lda o'zgartira oladi - taxmin har doim ham to'g'ri emas.
+function detectSplitMode(raw){
+  const text = String(raw == null ? '' : raw);
+  if (!text.trim()) return 'para';
+  // Qo'shtirnoqdan tashqarida tab yoki vergul ko'p bo'lsa - jadval
+  let tabs = 0, q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"') { q = !q; continue; }
+    if (!q && ch === '\t') tabs++;
+  }
+  if (tabs > 0) return 'table';
+  // Bo'sh qator bor - demak abzatslar bilan ajratilgan (Word'dan odatdagi holat)
+  if (/\n[ \t]*\n/.test(text)) return 'para';
+  // Har qator qisqa bo'lsa - har qator alohida matn
+  const lines = text.split('\n').map(x => x.trim()).filter(Boolean);
+  if (!lines.length) return 'para';
+  const avg = lines.reduce((n, l) => n + l.length, 0) / lines.length;
+  return avg < 120 ? 'line' : 'para';
+}
+
+// Boshidagi raqam/tire belgilarini olib tashlaymiz: "1. ", "2) ", "- ", "• "
+function stripBullet(t){
+  return String(t).replace(/^\s*(?:\d{1,4}\s*[.)\]-]\s+|[-*•–—]\s+)/, '').trim();
+}
+
+function splitScripts(raw, mode){
+  const m = (mode && mode !== 'auto') ? mode : detectSplitMode(raw);
+  if (m === 'table') {
+    const r = scriptsFromTable(parseTable(raw));
+    return { items: r.items, header: r.header, mode: 'table' };
+  }
+  const text = String(raw == null ? '' : raw).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const parts = m === 'para' ? text.split(/\n[ \t]*\n+/) : text.split('\n');
+  const items = [];
+  for (const raw2 of parts) {
+    const t = stripBullet(raw2);
+    if (t) items.push({ text: t, tag: '' });
+  }
+  return { items, header: null, mode: m };
+}
+
 // Qaysi ustun matn, qaysisi mavzu - o'rtacha uzunlikka qarab hal qilinadi.
 // Natija { items, header } - sarlavha tashlangan bo'lsa, u YASHIRILMAYDI,
 // foydalanuvchi ko'rib chiqish oynasida ko'radi va xato bo'lsa sezadi.
@@ -385,6 +430,10 @@ let state = {
   libQuery: '',
   libFilter: 'yangi',        // yangi | hammasi | ishlatilgan
   scriptPreview: null,
+  importRaw: '',
+  importMode: 'auto',
+  pickedScriptId: null,
+  showPick: false,
   showPastPosts: false,
   newCatName: '',
   showNewCat: false,
@@ -1748,6 +1797,7 @@ function render(){
     ${state.showAddPost ? renderAddPostModal(today) : ''}
     ${state.showLibrary ? renderLibraryModal() : ''}
     ${state.showImportScripts ? renderImportScriptsModal() : ''}
+    ${state.showPick ? renderPickModal() : ''}
     ${renderFab()}
     ${renderUndoBar()}
   `;
@@ -2026,7 +2076,7 @@ function renderIdeaCard(it){
 
 function renderFab(){
   if (state.showAddPlan || state.showAddTask || state.showBackup || state.showCapture
-      || state.showAddPost || state.showLibrary || state.showImportScripts) return '';
+      || state.showAddPost || state.showLibrary || state.showImportScripts || state.showPick) return '';
   return `<button class="rp-fab" data-action="open-capture" aria-label="Fikr yozib olish">&#43;</button>`;
 }
 
@@ -2137,11 +2187,12 @@ function libraryRows(){
 }
 
 // Import ikki bosqichli: avval nima bo'lishini ko'rsatamiz, keyin tasdiq.
-function prepareScriptImport(raw){
-  const parsed = scriptsFromTable(parseTable(raw));
+function prepareScriptImport(raw, mode){
+  state.importRaw = String(raw == null ? '' : raw);
+  const parsed = splitScripts(state.importRaw, mode || state.importMode || 'auto');
   const found = parsed.items;
   if (!found.length) {
-    state.scriptPreview = { error: "Matn topilmadi. Google Sheets'dan ustunni nusxalab qo'ying." };
+    state.scriptPreview = { error: 'Matn topilmadi. Word yoki Sheets\'dan nusxalab qo\'ying.' };
     render(); return;
   }
   if (found.length > 20000) {
@@ -2159,8 +2210,11 @@ function prepareScriptImport(raw){
     if (have.has(id)) { dup++; continue; }
     fresh.push({ id, text: f.text.slice(0, 8000), tag: f.tag.slice(0, 60), createdAt: Date.now() });
   }
+  state.importMode = parsed.mode;
   state.scriptPreview = {
-    total: found.length, fresh, dup, header: parsed.header,
+    total: found.length, fresh, dup, header: parsed.header, mode: parsed.mode,
+    samples: found.slice(0, 3).map(x => x.text.slice(0, 180)),
+    avgLen: Math.round(found.reduce((n, x) => n + x.text.length, 0) / found.length),
     usedAmong: fresh.filter(x => isScriptUsed(x.id)).length,
     bytes: fresh.reduce((n, x) => n + x.text.length, 0),
   };
@@ -2172,6 +2226,8 @@ function confirmScriptImport(){
   if (!pv || pv.error || !pv.fresh.length) return;
   state.scripts = state.scripts.concat(pv.fresh);
   state.scriptPreview = null;
+  state.importRaw = '';
+  state.importMode = 'auto';
   state.showImportScripts = false;
   commit(); render();
   toast(pv.fresh.length + ' ta matn qo\'shildi');
@@ -2203,16 +2259,34 @@ function renderContentTab(today){
 
   return `
     ${renderFunnel(st)}
+    ${renderScriptBank(lib, yangi)}
     <div class="rp-content-actions">
       <button class="rp-add-btn" data-action="open-add-post">&#43; Yangi kontent</button>
-      <button class="rp-add-btn" data-action="open-library">Matn kutubxonasi</button>
+      <button class="rp-add-btn" data-action="open-library">Kutubxona</button>
     </div>
-    ${lib ? `<div class="rp-lib-hint">Kutubxonada <b>${yangi}</b> ta ishlatilmagan matn (jami ${lib})</div>` : ''}
     ${body}
     ${past.length ? `
       <button class="rp-link-btn rp-past-toggle" data-action="toggle-past">${state.showPastPosts ? 'O\'tgan kunlarni yashirish' : `O'tgan kunlar (${past.length})`}</button>
       ${state.showPastPosts ? `<div class="rp-list rp-list-past">${past.map(p => renderPostCard(p, todayKey)).join('')}</div>` : ''}
     ` : ''}`;
+}
+
+// Matn zaxirasi - eng ko'p qaraladigan raqam, shuning uchun alohida blokda.
+function renderScriptBank(lib, yangi){
+  if (!lib) {
+    return `<div class="rp-bank rp-bank-empty">
+      <div class="rp-bank-text">Matn kutubxonasi bo'sh. Word yoki Sheets'dagi matnlaringizni bir marta qo'ying.</div>
+      <button class="rp-bank-btn" data-action="open-import-scripts">Matn qo'yish</button>
+    </div>`;
+  }
+  const tone = yangi >= 30 ? 'ok' : (yangi >= 10 ? 'warn' : 'bad');
+  return `<div class="rp-bank">
+    <div class="rp-bank-nums">
+      <span class="rp-bank-big rp-tone-${tone}">${yangi}</span>
+      <span class="rp-bank-lbl">ta matn tayyor<br><i>jami ${lib} &middot; ${lib - yangi} ishlatilgan</i></span>
+    </div>
+    <button class="rp-bank-btn" data-action="open-pick"${yangi ? '' : ' disabled'}>Matn ber</button>
+  </div>`;
 }
 
 function renderFunnel(st){
@@ -2321,28 +2395,79 @@ function renderLibraryModal(){
 
 function renderImportScriptsModal(){
   const pv = state.scriptPreview;
+  const modes = [
+    ['para',  "Bo'sh qator bilan", 'Word: har matn orasida bo’sh qator'],
+    ['line',  'Har qator alohida', 'Bir qatorli qisqa matnlar'],
+    ['table', 'Jadval (ustunlar)', 'Google Sheets ustuni'],
+  ];
   return `
     <div class="rp-modal-overlay" data-action="close-import-scripts">
       <div class="rp-modal rp-modal-tall" data-action="noop">
         <div class="rp-modal-header"><span>Matnlarni qo'yish</span><button class="rp-icon-btn" data-action="close-import-scripts">&#10005;</button></div>
-        <p class="rp-note">Google Sheets'da matnlar ustunini belgilang &rarr; nusxalang &rarr; shu yerga qo'ying. Bir necha ustun bo'lsa, eng uzuni matn deb olinadi, qolgani mavzu bo'ladi.</p>
-        <textarea id="f-scripts" class="rp-idea-input" rows="6" placeholder="Bu yerga qo'ying..."></textarea>
+        <p class="rp-note">Word yoki Sheets'dan matnlarni nusxalab shu yerga qo'ying. Keyin &laquo;Tekshirish&raquo; bosing — nechtaga bo'linganini ko'rasiz.</p>
+        <textarea id="f-scripts" class="rp-idea-input" rows="5" placeholder="Bu yerga qo'ying...">${esc(state.importRaw)}</textarea>
+
+        <div class="rp-mode-label">Qanday ajratilsin</div>
+        <div class="rp-pill-row rp-lib-filters">
+          ${modes.map(([id, lab]) => `<button class="rp-pill${state.importMode === id ? ' rp-pill-active' : ''}" data-action="import-mode" data-m="${id}">${lab}</button>`).join('')}
+        </div>
+        <div class="rp-mode-hint">${esc((modes.find(m => m[0] === state.importMode) || modes[0])[2])}</div>
+
         ${pv && pv.error ? `<div class="rp-cloud-err">${esc(pv.error)}</div>` : ''}
         ${pv && !pv.error ? `
           <div class="rp-import-box">
             <div class="rp-import-title">Nima qo'shiladi</div>
-            ${pv.header ? `<div class="rp-import-msg">Birinchi qator sarlavha deb hisoblandi va tashlandi: &laquo;${esc(pv.header)}&raquo;</div>` : ''}
-            <div class="rp-import-row"><span>Topildi</span><b>${pv.total}</b></div>
+            ${pv.header ? `<div class="rp-import-msg">Birinchi qator sarlavha deb hisoblandi: &laquo;${esc(pv.header)}&raquo;</div>` : ''}
+            <div class="rp-import-row"><span>Bo'lindi</span><b>${pv.total} ta matn</b></div>
+            <div class="rp-import-row"><span>O'rtacha uzunligi</span><b>${pv.avgLen} belgi</b></div>
             <div class="rp-import-row"><span>Yangi</span><b>${pv.fresh.length}</b></div>
             <div class="rp-import-row"><span>Allaqachon bor</span><b>${pv.dup}</b></div>
             ${pv.usedAmong ? `<div class="rp-import-msg">${pv.usedAmong} tasi ilgari ishlatilgan deb belgilangan — belgisi saqlanadi.</div>` : ''}
-            ${pv.totalKB > 2500 ? `<div class="rp-import-msg rp-import-warn">Kutubxona ${pv.totalKB} KB bo'ladi — bu brauzer chegarasiga yaqinlashyapti. Eski matnlarni tozalash yoki kamroq qo'yish tavsiya etiladi.</div>` : ''}
+            ${pv.totalKB > 2500 ? `<div class="rp-import-msg rp-import-warn">Kutubxona ${pv.totalKB} KB bo'ladi — brauzer chegarasiga yaqin.</div>` : ''}
+
+            <div class="rp-sample-title">Shunday bo'lindi — to'g'rimi?</div>
+            ${pv.samples.map((t, i) => `<div class="rp-sample"><span>${i + 1}</span><div>${esc(t)}${t.length >= 180 ? '&hellip;' : ''}</div></div>`).join('')}
+            <div class="rp-import-msg">Noto'g'ri bo'lingan bo'lsa — yuqoridagi ajratish usulini o'zgartiring.</div>
+
             <div class="rp-import-actions">
-              <button class="rp-save-btn" data-action="confirm-scripts">Qo'shish</button>
+              <button class="rp-save-btn" data-action="confirm-scripts">Ha, qo'shish</button>
               <button class="rp-link-btn" data-action="cancel-scripts">Bekor qilish</button>
             </div>
           </div>` : `<button class="rp-save-btn" data-action="preview-scripts">Tekshirish</button>`}
         <p class="rp-note rp-note-small">Matnlar shu qurilmada va zaxira faylida saqlanadi. Bulutga faqat qaysilari ishlatilgani yuboriladi.</p>
+      </div>
+    </div>`;
+}
+
+// ---------- "Menga matn ber" ----------
+// Kerak bo'lganda bitta ishlatilmagan matnni beradi. Tanlash shart emas -
+// ochasiz, o'qiysiz, olasiz yoki boshqasini so'raysiz.
+function unusedScripts(){ return state.scripts.filter(x => !isScriptUsed(x.id)); }
+
+function pickNextScript(skipCurrent){
+  const pool = unusedScripts();
+  if (!pool.length) { state.pickedScriptId = null; return; }
+  if (!skipCurrent || !state.pickedScriptId) { state.pickedScriptId = pool[0].id; return; }
+  const i = pool.findIndex(x => x.id === state.pickedScriptId);
+  state.pickedScriptId = pool[(i + 1 + pool.length) % pool.length].id;
+}
+
+function renderPickModal(){
+  const pool = unusedScripts();
+  const sc = pool.find(x => x.id === state.pickedScriptId) || pool[0] || null;
+  const idx = sc ? pool.findIndex(x => x.id === sc.id) + 1 : 0;
+  return `
+    <div class="rp-modal-overlay" data-action="close-pick">
+      <div class="rp-modal rp-modal-tall" data-action="noop">
+        <div class="rp-modal-header"><span>Keyingi matn</span><button class="rp-icon-btn" data-action="close-pick">&#10005;</button></div>
+        ${!sc ? `<div class="rp-empty">Ishlatilmagan matn qolmadi. Kutubxonaga yangi matn qo'ying.</div>` : `
+          <div class="rp-pick-count">${idx} / ${pool.length} — ishlatilmagan</div>
+          ${sc.tag ? `<div class="rp-lib-tag">${esc(sc.tag)}</div>` : ''}
+          <div class="rp-pick-text">${esc(sc.text)}</div>
+          <button class="rp-save-btn" data-action="pick-take" data-id="${esc(sc.id)}">Shuni olaman</button>
+          <button class="rp-add-btn" data-action="pick-next">Boshqasini ko'rsat</button>
+          <p class="rp-note rp-note-small">&laquo;Shuni olaman&raquo; — kontent ro'yxatiga tushadi, matn bosqichi tayyor bo'ladi va bu matn ishlatilgan deb belgilanadi.</p>
+        `}
       </div>
     </div>`;
 }
@@ -2961,12 +3086,23 @@ const handlers = {
   'toggle-used': (btn) => { markScriptUsed(btn.dataset.id, !isScriptUsed(btn.dataset.id)); render(); },
   'script-to-post': (btn) => scriptToPost(btn.dataset.id),
 
-  'open-import-scripts': () => { state.showImportScripts = true; state.scriptPreview = null; render(); },
-  'close-import-scripts': () => { state.showImportScripts = false; state.scriptPreview = null; render(); },
+  'open-import-scripts': () => { state.showImportScripts = true; state.scriptPreview = null; state.importRaw = ''; state.importMode = 'auto'; render(); },
+  'close-import-scripts': () => { state.showImportScripts = false; state.scriptPreview = null; state.importRaw = ''; state.importMode = 'auto'; render(); },
   'preview-scripts': () => {
     const ta = document.getElementById('f-scripts');
-    prepareScriptImport((ta && ta.value) || '');
+    prepareScriptImport((ta && ta.value) || '', state.importMode);
   },
+  'import-mode': (btn) => {
+    state.importMode = btn.dataset.m;
+    const ta = document.getElementById('f-scripts');
+    const raw = ((ta && ta.value) || state.importRaw || '');
+    if (raw.trim()) prepareScriptImport(raw, state.importMode);
+    else render();
+  },
+  'open-pick': () => { state.showPick = true; pickNextScript(false); render(); },
+  'close-pick': () => { state.showPick = false; render(); },
+  'pick-next': () => { pickNextScript(true); render(); },
+  'pick-take': (btn) => { scriptToPost(btn.dataset.id); state.showPick = false; render(); },
   'confirm-scripts': () => confirmScriptImport(),
   'cancel-scripts': () => { state.scriptPreview = null; render(); },
 
