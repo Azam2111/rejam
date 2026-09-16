@@ -433,6 +433,11 @@ let state = {
   importRaw: '',
   importMode: 'auto',
   pickedScriptId: null,
+  reelPreview: null,
+  reelRaw: '',
+  showReelImport: false,
+  showReport: false,
+  reportDate: null,
   showPick: false,
   showPastPosts: false,
   newCatName: '',
@@ -717,9 +722,11 @@ function validatePost(raw, seen, issues){
   if (!title) { issues.push('Kontent: nomsiz, tashlandi'); return null; }
   const createdAt = finiteNum(raw.createdAt);
   const editedAt = finiteNum(raw.editedAt);
+  const ref = String(raw.ref == null ? '' : raw.ref).trim().toUpperCase();
   const out = {
     id: cleanId(raw.id, seen, issues, `Kontent "${title}"`),
     title,
+    ref: /^[A-Z0-9_-]{1,16}$/.test(ref) ? ref : '',   // Sheet'dagi reel ID (R012)
     date: isValidDateKey(raw.date) ? raw.date : null,
     scriptId: (typeof raw.scriptId === 'string' && ID_RE.test(raw.scriptId)) ? raw.scriptId : null,
     note: cleanText(raw.note, 2000),
@@ -1798,6 +1805,8 @@ function render(){
     ${state.showLibrary ? renderLibraryModal() : ''}
     ${state.showImportScripts ? renderImportScriptsModal() : ''}
     ${state.showPick ? renderPickModal() : ''}
+    ${state.showReelImport ? renderReelImportModal() : ''}
+    ${state.showReport ? renderReportModal() : ''}
     ${renderFab()}
     ${renderUndoBar()}
   `;
@@ -2076,7 +2085,8 @@ function renderIdeaCard(it){
 
 function renderFab(){
   if (state.showAddPlan || state.showAddTask || state.showBackup || state.showCapture
-      || state.showAddPost || state.showLibrary || state.showImportScripts || state.showPick) return '';
+      || state.showAddPost || state.showLibrary || state.showImportScripts || state.showPick
+      || state.showReelImport || state.showReport) return '';
   return `<button class="rp-fab" data-action="open-capture" aria-label="Fikr yozib olish">&#43;</button>`;
 }
 
@@ -2165,6 +2175,114 @@ function deletePost(id){
   });
 }
 
+// ---------- Sheet <-> Rejam ko'prigi ----------
+// Sheet asosiy baza. Rejam telefonda belgilash uchun. Ikki tomonlama ko'chirish
+// qo'lda bo'lmasligi kerak - aks holda ikki marta yozish boshlanadi va tizim o'ladi.
+
+// Reels varag'idan nusxalangan qatorlarni o'qiydi.
+// Kutiladigan shakl: ID <tab> Hook/sarlavha <tab> ... <tab> Status
+const SHEET_STATUS = [
+  { re: /chop\s*etil/i,   stage: 3 },   // hammasi tayyor
+  { re: /montaj/i,        stage: 3 },
+  { re: /olind/i,         stage: 2 },
+  { re: /ssenariy|matn/i, stage: 1 },
+  { re: /brak/i,          stage: 0 },
+];
+
+function parseReelRows(raw){
+  const rows = parseTable(raw);
+  const out = [];
+  for (const r of rows) {
+    const cells = r.map(c => String(c == null ? '' : c).trim());
+    if (!cells.some(Boolean)) continue;
+    // ID: R bilan boshlanadigan yoki qisqa harf+raqam katakcha
+    let ref = '', refIdx = -1;
+    for (let i = 0; i < cells.length; i++) {
+      if (/^[A-Za-z]{1,3}\d{1,5}$/.test(cells[i])) { ref = cells[i].toUpperCase(); refIdx = i; break; }
+    }
+    // Sarlavha: ID dan keyingi eng uzun katakcha
+    let title = '', best = -1;
+    for (let i = 0; i < cells.length; i++) {
+      if (i === refIdx) continue;
+      if (matchStatus(cells[i]) !== null && cells[i].length < 20) continue;
+      if (cells[i].length > best) { best = cells[i].length; title = cells[i]; }
+    }
+    if (!ref) { out.push({ skipped: true, why: cells.slice(0, 3).join(' / ').slice(0, 60) }); continue; }
+    // Status: qaysi katakcha holatga o'xshaydi
+    let stage = null;
+    for (const c of cells) { const m = matchStatus(c); if (m !== null) { stage = m; break; } }
+    out.push({ ref, title: (title || ref).slice(0, 300), stage });
+  }
+  return out;
+}
+
+function matchStatus(cell){
+  const t = String(cell == null ? '' : cell).trim();
+  if (!t || t.length > 24) return null;
+  for (const s of SHEET_STATUS) if (s.re.test(t)) return s.stage;
+  return null;
+}
+
+function prepareReelImport(raw){
+  const all = parseReelRows(raw);
+  const found = all.filter(x => !x.skipped);
+  const skipped = all.filter(x => x.skipped);
+  if (!found.length) {
+    state.reelPreview = { error: 'Qator topilmadi. Reels varag\'idan ID va sarlavha ustunlarini nusxalang.' };
+    render(); return;
+  }
+  const haveRefs = new Set(state.posts.map(p => p.ref).filter(Boolean));
+  const fresh = [], dup = [];
+  for (const f of found) {
+    if (f.ref && haveRefs.has(f.ref)) { dup.push(f); continue; }
+    if (f.ref) haveRefs.add(f.ref);
+    fresh.push(f);
+  }
+  state.reelPreview = { total: found.length, fresh, dup: dup.length, samples: fresh.slice(0, 3),
+                        skipped: skipped.length, skippedWhy: skipped.slice(0, 2).map(x => x.why) };
+  render();
+}
+
+// Jadvaldan kelgan bosqichlarga shu belgi qo'yiladi: "tayyor, lekin qachonligi
+// noma'lum". Hisobot faqat TELEFONDA bosilgan ishni ko'rsatishi kerak - aks holda
+// jadvaldan olingani "bugun qildim" bo'lib jadvalga qaytib borardi.
+const IMPORTED_AT = 1;
+
+function confirmReelImport(){
+  const pv = state.reelPreview;
+  if (!pv || pv.error || !pv.fresh.length) return;
+  const now = Date.now();
+  const add = pv.fresh.map(f => {
+    const p = { id: uid(), title: f.title, ref: f.ref, date: null, scriptId: null, note: '',
+                createdAt: now, editedAt: now, matnAt: null, videoAt: null, montajAt: null };
+    const st = f.stage == null ? 1 : f.stage;   // status yo'q bo'lsa - matn tayyor deb olamiz
+    for (let k = 0; k < st && k < STAGE_KEYS.length; k++) p[STAGE_KEYS[k]] = IMPORTED_AT;
+    return p;
+  });
+  state.posts = state.posts.concat(add);
+  state.reelPreview = null;
+  state.reelRaw = '';
+  state.showReelImport = false;
+  commit(); render();
+  toast(add.length + ' ta reel qo\'shildi');
+}
+
+// ---------- Sheet uchun hisobot ----------
+// Sheet'ning o'z yo'riqnomasi shunday matnni kutadi:
+// "2026-09-03, Lokatsiya: R012 va R015 olindi; R020 brak"
+function reportForDay(dateKey){
+  const lines = { olindi: [], montaj: [] };
+  for (const p of state.posts) {
+    const name = p.ref || p.title.slice(0, 40);
+    if (p.montajAt && toKey(new Date(p.montajAt)) === dateKey) lines.montaj.push(name);
+    else if (p.videoAt && toKey(new Date(p.videoAt)) === dateKey) lines.olindi.push(name);
+  }
+  const parts = [];
+  if (lines.olindi.length) parts.push(lines.olindi.join(', ') + ' olindi');
+  if (lines.montaj.length) parts.push(lines.montaj.join(', ') + ' montaj tayyor');
+  return { text: parts.length ? dateKey + ': ' + parts.join('; ') : '', counts: lines };
+}
+
 // ---------- Matn kutubxonasi ----------
 function isScriptUsed(id){ return state.usedScripts.indexOf(id) >= 0; }
 
@@ -2250,25 +2368,39 @@ function renderContentTab(today){
   const yangi = state.scripts.filter(x => !isScriptUsed(x.id)).length;
 
   const sorted = postsSorted();
-  const act = sorted.filter(p => !p.date || p.date >= todayKey);
-  const past = sorted.filter(p => p.date && p.date < todayKey).reverse();
+  const bugun  = sorted.filter(p => p.date === todayKey);
+  const keyin  = sorted.filter(p => p.date && p.date > todayKey);
+  const zaxira = sorted.filter(p => !p.date);
+  const past   = sorted.filter(p => p.date && p.date < todayKey).reverse();
 
-  const body = act.length === 0
-    ? `<div class="rp-empty"><p>Hali kontent yo'q. Matn kutubxonasidan oling yoki qo'lda qo'shing.</p></div>`
-    : `<div class="rp-list">${act.map(p => renderPostCard(p, todayKey)).join('')}</div>`;
+  const sec = (label, list) => !list.length ? '' :
+    `<div class="rp-sec-label">${label}${list.length > 1 ? ` <i>${list.length}</i>` : ''}</div>
+     <div class="rp-list">${list.map(p => renderPostCard(p, todayKey)).join('')}</div>`;
+
+  const bosh = state.posts.length === 0
+    ? `<div class="rp-empty"><p>Reels OS jadvalidan bugungi ro'yxatni oling — shu yerda belgilab borasiz.</p></div>`
+    : '';
+
+  const rep = reportForDay(todayKey);
 
   return `
     ${renderFunnel(st)}
-    ${renderScriptBank(lib, yangi)}
-    <div class="rp-content-actions">
-      <button class="rp-add-btn" data-action="open-add-post">&#43; Yangi kontent</button>
-      <button class="rp-add-btn" data-action="open-library">Kutubxona</button>
-    </div>
-    ${body}
+    ${bosh}
+    ${sec('Bugun', bugun)}
+    ${sec('Keyingi kunlar', keyin)}
+    ${sec('Zaxira', zaxira)}
     ${past.length ? `
-      <button class="rp-link-btn rp-past-toggle" data-action="toggle-past">${state.showPastPosts ? 'O\'tgan kunlarni yashirish' : `O'tgan kunlar (${past.length})`}</button>
-      ${state.showPastPosts ? `<div class="rp-list rp-list-past">${past.map(p => renderPostCard(p, todayKey)).join('')}</div>` : ''}
-    ` : ''}`;
+      <button class="rp-link-btn rp-past-toggle" data-action="toggle-past">${state.showPastPosts ? "O'tganlarni yashirish" : `O'tgan kunlar (${past.length})`}</button>
+      ${state.showPastPosts ? `<div class="rp-list rp-list-past">${past.map(p => renderPostCard(p, todayKey)).join('')}</div>` : ''}` : ''}
+
+    <div class="rp-bridge">
+      <div class="rp-bridge-title">Reels OS jadvali bilan</div>
+      <button class="rp-add-btn" data-action="open-reel-import">Jadvaldan ro'yxat olish</button>
+      <button class="rp-add-btn${rep.text ? ' rp-bridge-ready' : ''}" data-action="open-report">Jadval uchun hisobot${rep.text ? ' · tayyor' : ''}</button>
+      <button class="rp-link-btn rp-bridge-more" data-action="open-add-post">Qo'lda kontent qo'shish</button>
+    </div>
+
+    ${renderScriptBank(lib, yangi)}`;
 }
 
 // Matn zaxirasi - eng ko'p qaraladigan raqam, shuning uchun alohida blokda.
@@ -2326,6 +2458,7 @@ function renderPostCard(p, todayKey){
   return `
     <div class="rp-card rp-post">
       <div class="rp-post-top">
+        ${p.ref ? `<span class="rp-post-ref">${esc(p.ref)}</span>` : ''}
         <span class="rp-post-date${p.date === todayKey ? ' rp-post-today' : ''}${late ? ' rp-post-late' : ''}">${esc(dateTxt)}</span>
         <div class="rp-post-title">${esc(p.title)}</div>
         <button class="rp-icon-btn" data-action="delete-post" data-id="${esc(p.id)}" aria-label="O'chirish">&#10005;</button>
@@ -2450,6 +2583,52 @@ function pickNextScript(skipCurrent){
   if (!skipCurrent || !state.pickedScriptId) { state.pickedScriptId = pool[0].id; return; }
   const i = pool.findIndex(x => x.id === state.pickedScriptId);
   state.pickedScriptId = pool[(i + 1 + pool.length) % pool.length].id;
+}
+
+function renderReelImportModal(){
+  const pv = state.reelPreview;
+  return `
+    <div class="rp-modal-overlay" data-action="close-reel-import">
+      <div class="rp-modal rp-modal-tall" data-action="noop">
+        <div class="rp-modal-header"><span>Jadvaldan ro'yxat olish</span><button class="rp-icon-btn" data-action="close-reel-import">&#10005;</button></div>
+        <p class="rp-note">Reels OS'ning <b>Reels</b> varag'ida bugungi ish qatorlarini belgilang (ID, sarlavha, status ustunlari) va nusxalab shu yerga qo'ying.</p>
+        <textarea id="f-reels" class="rp-idea-input" rows="5" placeholder="R012&#9;3 ta arabcha so'z&#9;Ssenariy">${esc(state.reelRaw)}</textarea>
+        ${pv && pv.error ? `<div class="rp-cloud-err">${esc(pv.error)}</div>` : ''}
+        ${pv && !pv.error ? `
+          <div class="rp-import-box">
+            <div class="rp-import-title">Nima qo'shiladi</div>
+            <div class="rp-import-row"><span>Topildi</span><b>${pv.total} ta qator</b></div>
+            <div class="rp-import-row"><span>Yangi</span><b>${pv.fresh.length}</b></div>
+            <div class="rp-import-row"><span>Allaqachon bor</span><b>${pv.dup}</b></div>
+            ${pv.skipped ? `<div class="rp-import-msg">${pv.skipped} ta qator ID topilmagani uchun tashlandi${pv.skippedWhy.length ? ` (${esc(pv.skippedWhy.join('; '))})` : ''}. Sarlavha qatori bo'lsa — shunday bo'lishi kerak.</div>` : ''}
+            <div class="rp-sample-title">Shunday o'qildi — to'g'rimi?</div>
+            ${pv.samples.map(f => `<div class="rp-sample"><span>${esc(f.ref || '?')}</span><div>${esc(f.title.slice(0, 120))}<br><i>${f.stage == null ? 'status topilmadi — matn tayyor deb olinadi' : 'bosqich: ' + f.stage}</i></div></div>`).join('')}
+            <div class="rp-import-actions">
+              <button class="rp-save-btn" data-action="confirm-reels">Ha, qo'shish</button>
+              <button class="rp-link-btn" data-action="cancel-reels">Bekor qilish</button>
+            </div>
+          </div>` : `<button class="rp-save-btn" data-action="preview-reels">Tekshirish</button>`}
+      </div>
+    </div>`;
+}
+
+function renderReportModal(){
+  const d = state.reportDate || toKey(new Date());
+  const rep = reportForDay(d);
+  return `
+    <div class="rp-modal-overlay" data-action="close-report">
+      <div class="rp-modal rp-modal-tall" data-action="noop">
+        <div class="rp-modal-header"><span>Jadval uchun hisobot</span><button class="rp-icon-btn" data-action="close-report">&#10005;</button></div>
+        <label class="rp-field"><span>Qaysi kun</span>
+          <input id="f-report-date" type="date" value="${esc(d)}" data-action="noop" />
+        </label>
+        ${!rep.text
+          ? `<div class="rp-empty">Shu kuni belgilangan ish yo'q.</div>`
+          : `<div class="rp-report-box" id="rp-report-text">${esc(rep.text)}</div>
+             <button class="rp-save-btn" data-action="copy-report">Nusxa olish</button>
+             <p class="rp-note rp-note-small">Shu matnni menga yoki Reels OS'ga yuboring — jadvaldagi statuslar yangilanadi.</p>`}
+      </div>
+    </div>`;
 }
 
 function renderPickModal(){
@@ -3099,6 +3278,26 @@ const handlers = {
     if (raw.trim()) prepareScriptImport(raw, state.importMode);
     else render();
   },
+  'open-reel-import': () => { state.showReelImport = true; state.reelPreview = null; state.reelRaw = ''; render(); },
+  'close-reel-import': () => { state.showReelImport = false; state.reelPreview = null; state.reelRaw = ''; render(); },
+  'preview-reels': () => {
+    const ta = document.getElementById('f-reels');
+    state.reelRaw = (ta && ta.value) || '';
+    prepareReelImport(state.reelRaw);
+  },
+  'confirm-reels': () => confirmReelImport(),
+  'cancel-reels': () => { state.reelPreview = null; render(); },
+
+  'open-report': () => { state.showReport = true; state.reportDate = toKey(new Date()); render(); },
+  'close-report': () => { state.showReport = false; render(); },
+  'copy-report': () => {
+    const rep = reportForDay(state.reportDate || toKey(new Date()));
+    if (!rep.text) return;
+    navigator.clipboard.writeText(rep.text)
+      .then(() => toast('Nusxa olindi'))
+      .catch(() => toast('Nusxa olib bo\'lmadi — matnni qo\'lda belgilang'));
+  },
+
   'open-pick': () => { state.showPick = true; pickNextScript(false); render(); },
   'close-pick': () => { state.showPick = false; render(); },
   'pick-next': () => { pickNextScript(true); render(); },
@@ -3187,6 +3386,7 @@ document.addEventListener('input', (e) => {
   else if (el.dataset && el.dataset.draft === 'idea') ideaDraft = el.value;
   else if (el.dataset && el.dataset.draft === 'plan') planDraft[el.dataset.field] = el.value;
   else if (el.dataset && el.dataset.draft === 'task') taskDraft[el.dataset.field] = el.value;
+  else if (el.id === 'f-report-date') { state.reportDate = el.value; render(); }
   else if (el.dataset && el.dataset.draft === 'libq') {
     // Qidiruvda render() maydonni qayta yaratadi va fokus yo'qoladi - shuning uchun
     // faqat ro'yxat qismini yangilaymiz.
