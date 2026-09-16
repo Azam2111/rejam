@@ -43,6 +43,7 @@ function serve(port){
   const clear = () => page.evaluate(async () => {
     state.plans = []; state.tasks = []; state.ideas = [];
     state.posts = []; state.scripts = []; state.usedScripts = [];
+    state.importMode = 'auto'; state.importRaw = ''; state.scriptPreview = null;
     await commit();
   });
 
@@ -82,6 +83,88 @@ function serve(port){
   h = await page.evaluate(() => scriptsFromTable(parseTable(
     "Salom.\nBirinchi uzun matn bu yerda turibdi va ancha uzun\nIkkinchi uzun matn ham shunday uzun bo'ladi\nUchinchi uzun ham")));
   check('nuqta bilan tugagan qisqa qator sarlavha emas', h.header === null, JSON.stringify(h.header));
+
+  group('WORD HUJJATIDAN NUSXA (ko\'p qatorli matnlar)');
+  // Asosiy xavf: bitta reels matni bir necha qatordan iborat.
+  // Har qatorga bo'linib ketmasligi kerak.
+  const wordDoc = [
+    "Arab tilida eng ko'p ishlatiladigan uch so'z",
+    "Birinchisi - kitob. Ikkinchisi - qalam.",
+    "Uchinchisi - daftar. Yodlab oling!",
+    "",
+    "Fe'l nima degan savol ko'p keladi",
+    "Oddiy qilib aytsam - harakatni bildiradi.",
+    "Misol: yozdi, o'qidi, keldi.",
+    "",
+    "Talabalarim eng ko'p qiladigan xato",
+    "Qoidani tushunmay yodlashga urinish.",
+  ].join('\n');
+
+  let w = await page.evaluate((d) => splitScripts(d, 'auto'), wordDoc);
+  check('Word matni abzats bo\'yicha bo\'linadi (har qatorga EMAS)',
+    w.items.length === 3, JSON.stringify({n:w.items.length, mode:w.mode}));
+  check('usul avtomatik "para" deb aniqlanadi', w.mode === 'para', w.mode);
+  check('birinchi matn butun qoladi (3 qator)',
+    w.items[0].text.split('\n').length === 3, JSON.stringify(w.items[0]));
+
+  // Raqamlangan ro'yxat
+  w = await page.evaluate(() => splitScripts("1. Birinchi matn bu yerda\n\n2. Ikkinchi matn bu yerda\n\n3) Uchinchi matn", 'para'));
+  check('boshidagi raqamlar olib tashlanadi',
+    w.items.length === 3 && w.items[0].text === 'Birinchi matn bu yerda' && w.items[2].text === 'Uchinchi matn',
+    JSON.stringify(w.items.map(x=>x.text)));
+
+  w = await page.evaluate(() => splitScripts("- Birinchi\n\n• Ikkinchi", 'para'));
+  check('tire va nuqtalar ham olib tashlanadi',
+    w.items[0].text === 'Birinchi' && w.items[1].text === 'Ikkinchi', JSON.stringify(w.items.map(x=>x.text)));
+
+  // Qisqa bir qatorli matnlar - "line" rejimi
+  w = await page.evaluate(() => splitScripts("Birinchi qisqa\nIkkinchi qisqa\nUchinchi qisqa", 'auto'));
+  check('qisqa bir qatorli matnlar uchun "line" tanlanadi', w.mode === 'line' && w.items.length === 3, JSON.stringify({m:w.mode,n:w.items.length}));
+
+  // Foydalanuvchi usulni qo'lda o'zgartira oladi
+  w = await page.evaluate((d) => splitScripts(d, 'line'), wordDoc);
+  check('qo\'lda "line" tanlansa har qator alohida bo\'ladi', w.items.length === 8, String(w.items.length));
+
+  // Jadval hali ham ishlaydi
+  w = await page.evaluate(() => splitScripts("Mavzu\tMatn\nA\tBu matn ancha uzun va bir necha so'zdan iborat bo'ladi\nB\tIkkinchi matn ham shunday uzun bo'lib turadi", 'auto'));
+  check('tabli matn hamon jadval deb o\'qiladi', w.mode === 'table' && w.items.length === 2, JSON.stringify({m:w.mode,n:w.items.length}));
+
+  group('IMPORT KO\'RINISHIDA NAMUNALAR KO\'RSATILADI');
+  await clear();
+  await page.evaluate((d) => prepareScriptImport(d, 'auto'), wordDoc);
+  await page.waitForTimeout(200);
+  const wpv = await page.evaluate(() => state.scriptPreview);
+  check('namunalar beriladi', Array.isArray(wpv.samples) && wpv.samples.length === 3, JSON.stringify(wpv.samples && wpv.samples.length));
+  check('o\'rtacha uzunlik ko\'rsatiladi', wpv.avgLen > 0, String(wpv.avgLen));
+  check('usul saqlanadi', wpv.mode === 'para', wpv.mode);
+
+  group('MATN BER (keyingi ishlatilmagan matn)');
+  await page.evaluate(() => confirmScriptImport());
+  await page.waitForTimeout(200);
+  check('3 ta matn qo\'shildi', await page.evaluate(() => state.scripts.length) === 3);
+
+  await page.evaluate(() => { state.showPick = true; pickNextScript(false); render(); });
+  await page.waitForTimeout(200);
+  const p1 = await page.evaluate(() => state.pickedScriptId);
+  check('birinchi ishlatilmagan matn tanlanadi', !!p1);
+  check('matn to\'liq ko\'rsatiladi', await page.evaluate(() => /Yodlab oling/.test(document.body.innerText)));
+
+  await page.evaluate(() => pickNextScript(true));
+  const p2 = await page.evaluate(() => state.pickedScriptId);
+  check('"boshqasini ko\'rsat" boshqa matn beradi', p1 !== p2, p1 + ' vs ' + p2);
+
+  await page.evaluate((id) => { scriptToPost(id); state.showPick = false; }, p2);
+  await page.waitForTimeout(250);
+  check('olingan matn kontentga aylanadi', await page.evaluate(() => state.posts.length) === 1);
+  check('olingan matn ishlatilgan deb belgilanadi', await page.evaluate((id) => isScriptUsed(id), p2));
+  check('qolgan zaxira kamayadi', await page.evaluate(() => unusedScripts().length) === 2);
+
+  // Hammasi ishlatilgach
+  await page.evaluate(() => { state.usedScripts = state.scripts.map(x => x.id); state.showPick = true; pickNextScript(false); render(); });
+  await page.waitForTimeout(200);
+  check('matn qolmaganda aniq aytiladi',
+    await page.evaluate(() => /qolmadi/.test(document.body.innerText)));
+  await page.evaluate(() => { state.showPick = false; render(); });
 
   group('MATN BARMOQ IZI (qayta qo\'yganda belgilar saqlanishi uchun)');
   const keys = await page.evaluate(() => ({
