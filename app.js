@@ -59,6 +59,114 @@ function addCategory(name){
   commit();
   return id;
 }
+// ==================== Kontent quvuri ====================
+// Uch bosqich, QAT'IY tartibda: matn -> video -> montaj.
+// Tartib majburiy, chunki aks holda "30 matn, shundan 20 video" degan son
+// ma'nosini yo'qotadi - olinmagan videoning montaji bo'lishi mumkin emas.
+const CONTENT_STAGES = [
+  { id:'matn',   label:'Matn'   },
+  { id:'video',  label:'Video'  },
+  { id:'montaj', label:'Montaj' },
+];
+const STAGE_KEYS = CONTENT_STAGES.map(x => x.id + 'At');
+
+// Matnning o'zidan hosil qilingan barmoq izi.
+// Shu sabab jadvalni qayta qo'yganda "ishlatilgan" belgilari saqlanib qoladi:
+// ID matnga bog'liq, qator raqamiga emas.
+function scriptKey(text){
+  const t = String(text == null ? '' : text).trim().replace(/\s+/g, ' ').toLowerCase();
+  let h1 = 0x811c9dc5, h2 = 0x9e3779b9;
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 + c, 0x85ebca6b) >>> 0;
+    h2 = ((h2 ^ (h2 >>> 13)) >>> 0);
+  }
+  return 's' + h1.toString(36) + h2.toString(36);
+}
+
+// Google Sheets'dan nusxalaganda TSV keladi; ko'p qatorli katakcha "..." ichida bo'ladi.
+// Oddiy split('\n') buni buzadi - shuning uchun to'liq tahlilchi.
+function parseTable(raw){
+  const text = String(raw == null ? '' : raw).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (!text.trim()) return [];
+
+  let tabs = 0, commas = 0, q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"') { q = !q; continue; }
+    if (q) continue;
+    if (ch === '\t') tabs++;
+    else if (ch === ',') commas++;
+  }
+  const delim = tabs > 0 ? '\t' : (commas > 0 ? ',' : null);
+  if (!delim) return text.split('\n').map(l => [l]).filter(r => r[0].trim());
+
+  const rows = [];
+  let row = [], cell = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQ) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { cell += '"'; i++; }
+        else inQ = false;
+      } else cell += ch;
+      continue;
+    }
+    if (ch === '"') { inQ = true; continue; }
+    if (ch === delim) { row.push(cell); cell = ''; continue; }
+    if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; continue; }
+    cell += ch;
+  }
+  row.push(cell); rows.push(row);
+  return rows.filter(r => r.some(c => c.trim()));
+}
+
+// Qaysi ustun matn, qaysisi mavzu - o'rtacha uzunlikka qarab hal qilinadi.
+// Natija { items, header } - sarlavha tashlangan bo'lsa, u YASHIRILMAYDI,
+// foydalanuvchi ko'rib chiqish oynasida ko'radi va xato bo'lsa sezadi.
+function scriptsFromTable(rows){
+  if (!rows.length) return { items: [], header: null };
+  const width = Math.max.apply(null, rows.map(r => r.length));
+
+  const pick = (r, col) => (r[col] || '').trim();
+  let textCol = 0;
+  if (width > 1) {
+    const avg = [];
+    for (let c = 0; c < width; c++) {
+      let sum = 0, cnt = 0;
+      for (const r of rows) { const v = pick(r, c); if (v) { sum += v.length; cnt++; } }
+      avg.push(cnt ? sum / cnt : 0);
+    }
+    for (let c = 1; c < width; c++) if (avg[c] > avg[textCol]) textCol = c;
+  }
+
+  // Sarlavhani faqat ishonchli hollarda tashlaymiz: birinchi katak juda qisqa,
+  // gap belgilari yo'q, va qolgan qatorlarning MEDIANASI undan ancha uzun.
+  // Median o'rtachadan yaxshiroq - bitta uzun matn qarorni buzmaydi.
+  let body = rows, header = null;
+  const first = pick(rows[0], textCol);
+  if (rows.length >= 2 && first && first.length <= 25 && !/[.!?\n]/.test(first)) {
+    const rest = rows.slice(1).map(r => pick(r, textCol).length).filter(n => n > 0).sort((a, b) => a - b);
+    const med = rest.length ? rest[Math.floor(rest.length / 2)] : 0;
+    if (med > first.length * 3) { body = rows.slice(1); header = first; }
+  }
+
+  const items = [];
+  for (const r of body) {
+    const text = pick(r, textCol);
+    if (!text) continue;
+    let tag = '';
+    for (let c = 0; c < width; c++) {
+      if (c === textCol) continue;
+      const v = pick(r, c);
+      if (v && v.length <= 60) { tag = v; break; }
+    }
+    items.push({ text, tag });
+  }
+  return { items, header };
+}
+
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 
 // Pauzada o'tgan kunlar soni (yig'ilgan + hozir davom etayotgani)
@@ -267,6 +375,17 @@ let state = {
   tasks: [],
   ideas: [],
   categories: [],
+  posts: [],                 // kontent quvuri
+  scripts: [],               // matn kutubxonasi (bulutga yuborilmaydi - pastdagi izohga qarang)
+  usedScripts: [],           // ishlatilgan matn ID'lari - BULUTGA yuboriladi
+  showLibrary: false,
+  showImportScripts: false,
+  showAddPost: false,
+  editingPostId: null,
+  libQuery: '',
+  libFilter: 'yangi',        // yangi | hammasi | ishlatilgan
+  scriptPreview: null,
+  showPastPosts: false,
   newCatName: '',
   showNewCat: false,
   expandedPlanId: null,
@@ -543,6 +662,50 @@ function validateTask(raw, seen, issues){
   };
 }
 
+function validatePost(raw, seen, issues){
+  if (!raw || typeof raw !== 'object') { issues.push('Kontent: obyekt emas, tashlandi'); return null; }
+  const title = cleanText(raw.title, 300).trim();
+  if (!title) { issues.push('Kontent: nomsiz, tashlandi'); return null; }
+  const createdAt = finiteNum(raw.createdAt);
+  const editedAt = finiteNum(raw.editedAt);
+  const out = {
+    id: cleanId(raw.id, seen, issues, `Kontent "${title}"`),
+    title,
+    date: isValidDateKey(raw.date) ? raw.date : null,
+    scriptId: (typeof raw.scriptId === 'string' && ID_RE.test(raw.scriptId)) ? raw.scriptId : null,
+    note: cleanText(raw.note, 2000),
+    createdAt: createdAt === null ? Date.now() : createdAt,
+    editedAt: editedAt === null ? undefined : editedAt,
+  };
+  for (const k of STAGE_KEYS) {
+    const v = finiteNum(raw[k]);
+    out[k] = (v === null || v <= 0) ? null : v;
+  }
+  // Tartibni tiklash: kechki bosqich belgilangan bo'lsa, oldingilari ham belgilangan bo'lishi shart
+  let seenLater = false;
+  for (let i = STAGE_KEYS.length - 1; i >= 0; i--) {
+    if (out[STAGE_KEYS[i]]) seenLater = true;
+    else if (seenLater) {
+      out[STAGE_KEYS[i]] = out[STAGE_KEYS[i + 1]];
+      issues.push(`Kontent "${title}": ${CONTENT_STAGES[i].label} bosqichi tiklandi`);
+    }
+  }
+  return out;
+}
+
+function validateScript(raw, seen, issues){
+  if (!raw || typeof raw !== 'object') { issues.push('Matn: obyekt emas, tashlandi'); return null; }
+  const text = cleanText(raw.text, 8000).trim();
+  if (!text) { issues.push('Matn: bo\'sh, tashlandi'); return null; }
+  const createdAt = finiteNum(raw.createdAt);
+  return {
+    id: cleanId(raw.id, seen, issues, 'Matn'),
+    text,
+    tag: cleanText(raw.tag, 60).trim(),
+    createdAt: createdAt === null ? Date.now() : createdAt,
+  };
+}
+
 function validateIdea(raw, seen, issues){
   if (!raw || typeof raw !== 'object') { issues.push('Fikr: obyekt emas, tashlandi'); return null; }
   const text = cleanText(raw.text, 5000).trim();
@@ -563,8 +726,10 @@ function validateEnvelope(raw){
   if (!raw || typeof raw !== 'object') return { ok:false, issues:['Fayl obyekt emas'] };
   const arr = v => Array.isArray(v) ? v : null;
   const rp = arr(raw.plans), rt = arr(raw.tasks), ri = arr(raw.ideas);
-  if (!rp && !rt && !ri) return { ok:false, issues:['Ichida plans/tasks/ideas ro\'yxati yo\'q'] };
+  const ro = arr(raw.posts), rs = arr(raw.scripts);
+  if (!rp && !rt && !ri && !ro && !rs) return { ok:false, issues:['Ichida plans/tasks/ideas ro\'yxati yo\'q'] };
   if (rp && rp.length > 5000) return { ok:false, issues:['Juda katta fayl (5000+ reja)'] };
+  if (rs && rs.length > 20000) return { ok:false, issues:['Juda katta fayl (20000+ matn)'] };
 
   // Kategoriyalar rejalardan OLDIN tiklanadi - catOf ular haqida bilishi kerak
   const cats = [];
@@ -586,6 +751,18 @@ function validateEnvelope(raw){
   const plans = (rp || []).map(x => validatePlan(x, seen, issues)).filter(Boolean);
   const tasks = (rt || []).map(x => validateTask(x, seen, issues)).filter(Boolean);
   const ideas = (ri || []).map(x => validateIdea(x, seen, issues)).filter(Boolean);
+  const posts = (ro || []).map(x => validatePost(x, seen, issues)).filter(Boolean);
+  const scripts = (rs || []).map(x => validateScript(x, seen, issues)).filter(Boolean);
+
+  // Ishlatilgan matn ID'lari - faqat haqiqatan mavjud ID shakli o'tadi
+  const usedScripts = [];
+  if (Array.isArray(raw.usedScripts)) {
+    const su = new Set();
+    for (const v of raw.usedScripts) {
+      const id = String(v == null ? '' : v);
+      if (ID_RE.test(id) && !su.has(id)) { su.add(id); usedScripts.push(id); }
+    }
+  }
 
   state.categories = prevCats;
   const revision = finiteNum(raw.revision);
@@ -598,16 +775,17 @@ function validateEnvelope(raw){
       revision: revision === null || revision < 0 ? 0 : Math.floor(revision),
       updatedAt,
       deviceId: cleanText(raw.deviceId, 64) || deviceId(),
-      plans, tasks, ideas, categories: cats,
+      plans, tasks, ideas, categories: cats, posts, scripts, usedScripts,
     },
-    counts: countsOf({ plans, tasks, ideas }),
+    counts: countsOf({ plans, tasks, ideas, posts, scripts }),
   };
 }
 
 function countsOf(o){
   const logs = (o.plans || []).reduce((s, p) => s + Object.keys(p.log || {}).length, 0);
   const comps = (o.tasks || []).reduce((s, t) => s + Object.keys(t.completions || {}).length, 0);
-  return { plans:(o.plans||[]).length, tasks:(o.tasks||[]).length, ideas:(o.ideas||[]).length, logs, completions:comps };
+  return { plans:(o.plans||[]).length, tasks:(o.tasks||[]).length, ideas:(o.ideas||[]).length,
+           posts:(o.posts||[]).length, scripts:(o.scripts||[]).length, logs, completions:comps };
 }
 
 function deviceId(){
@@ -629,6 +807,7 @@ function currentEnvelope(bumpRevision){
     updatedAt: Date.now(),
     deviceId: deviceId(),
     plans: state.plans, tasks: state.tasks, ideas: state.ideas, categories: state.categories,
+    posts: state.posts, scripts: state.scripts, usedScripts: state.usedScripts,
   };
 }
 
@@ -686,11 +865,16 @@ function snapshot(){ return currentEnvelope(false); }
 //   1) har entity'ning TAHRIR vaqti (editedAt) belgilanadi
 //   2) o'zgarish bulutga bildiriladi
 //   3) bulutdan kelgan ma'lumot xuddi import kabi darvozadan o'tkaziladi
-const CLOUD_COLLS = ['plans', 'tasks', 'ideas'];
+const CLOUD_COLLS = ['plans', 'tasks', 'ideas', 'posts'];
 let cloudPrev = null;          // oxirgi marta bulutga bildirilgan lokal nusxa (chuqur)
 
 function cloudView(){
-  return { plans: state.plans, tasks: state.tasks, ideas: state.ideas, categories: state.categories };
+  // DIQQAT: state.scripts ATAYLAB yuborilmaydi. 1000+ matn har qurilma kirganda
+  // 1000 ta alohida hujjat o'qish/yozish degani - sekin va keraksiz. Matnlar sizning
+  // Google jadvalingizda va zaxira faylida turadi. Bulutga faqat QAYSILARI
+  // ishlatilgani (usedScripts) boradi - eng muhimi va eng kichigi shu.
+  return { plans: state.plans, tasks: state.tasks, ideas: state.ideas,
+           posts: state.posts, categories: state.categories, usedScripts: state.usedScripts };
 }
 function deepCopy(o){ return JSON.parse(JSON.stringify(o)); }
 
@@ -747,6 +931,7 @@ window.rejamApplyCloud = function(patch){
   const v = validateEnvelope({
     schemaVersion: SCHEMA_VERSION,
     plans: merged.plans, tasks: merged.tasks, ideas: merged.ideas, categories: merged.categories,
+    posts: merged.posts, scripts: state.scripts, usedScripts: merged.usedScripts,
   });
   if (!v.ok) { console.warn('[Rejam] bulutdan kelgan ma\'lumot rad etildi:', v.issues); return; }
 
@@ -778,6 +963,8 @@ window.rejamApplyCloud = function(patch){
   state.plans = v.envelope.plans;
   state.tasks = v.envelope.tasks;
   state.ideas = v.envelope.ideas;
+  state.posts = v.envelope.posts || [];
+  if (Array.isArray(patch.usedScripts)) state.usedScripts = v.envelope.usedScripts || [];
   ensureEditedAt(null);
 
   // Diskka yozamiz, lekin bulutga QAYTA yubormaymiz - aks holda cheksiz aylanma
@@ -865,6 +1052,9 @@ async function bootstrapStorage(){
     state.plans = best.env.plans;
     state.tasks = best.env.tasks;
     state.ideas = best.env.ideas;
+    state.posts = best.env.posts || [];
+    state.scripts = best.env.scripts || [];
+    state.usedScripts = best.env.usedScripts || [];
     revisionCounter = best.env.revision;
     if (best.issues && best.issues.length) state.readErrors.push(...best.issues.slice(0, 5));
 
@@ -915,7 +1105,8 @@ function envCounts(env){
   for (const p of (Array.isArray(env && env.plans) ? env.plans : [])) {
     logs += Object.keys((p && p.log) || {}).length;
   }
-  return { plans: n(env && env.plans), tasks: n(env && env.tasks), ideas: n(env && env.ideas), logs };
+  return { plans: n(env && env.plans), tasks: n(env && env.tasks), ideas: n(env && env.ideas),
+           posts: n(env && env.posts), scripts: n(env && env.scripts), logs };
 }
 
 async function scanStorage(){
@@ -925,7 +1116,7 @@ async function scanStorage(){
     const c = envCounts(raw);
     rows.push({
       source, where, counts: c,
-      total: c.plans + c.tasks + c.ideas,
+      total: c.plans + c.tasks + c.ideas + c.posts + c.scripts,
       updatedAt: Number(raw.updatedAt) || Number(raw.savedAt) || 0,
       raw,
     });
@@ -938,7 +1129,7 @@ async function scanStorage(){
       try {
         const v = await idbGet(k);
         if (!v || typeof v !== 'object') continue;
-        if (v.plans || v.tasks || v.ideas) add(String(k), 'IndexedDB', v);
+        if (v.plans || v.tasks || v.ideas || v.posts || v.scripts) add(String(k), 'IndexedDB', v);
         if (Array.isArray(v.rivals)) v.rivals.forEach((r, i) => add(String(k) + ' #' + (i + 1), 'IndexedDB', r && r.env));
       } catch(e){ rows.push({ source:String(k), where:'IndexedDB', error:(e.message || String(e)) }); }
     }
@@ -991,7 +1182,7 @@ function renderDiagnostics(){
                ? `<div class="rp-diag-row rp-diag-bad"><b>${esc(r.source)}</b><span>xato: ${esc(r.error)}</span></div>`
                : `<div class="rp-diag-row">
                     <div class="rp-diag-top"><b>${esc(r.source)}</b><span>${esc(r.where)}</span></div>
-                    <div class="rp-diag-num">${r.counts.plans} reja &middot; ${r.counts.tasks} vazifa &middot; ${r.counts.ideas} fikr &middot; ${r.counts.logs} yozuv</div>
+                    <div class="rp-diag-num">${r.counts.plans} reja &middot; ${r.counts.tasks} vazifa &middot; ${r.counts.ideas} fikr${r.counts.posts ? ` &middot; ${r.counts.posts} kontent` : ''}${r.counts.scripts ? ` &middot; ${r.counts.scripts} matn` : ''} &middot; ${r.counts.logs} yozuv</div>
                     ${r.updatedAt ? `<div class="rp-diag-num">${esc(fmtUz(new Date(r.updatedAt)))}</div>` : ''}
                     ${r.total > 0 ? `<button class="rp-link-btn" data-action="restore-scan" data-idx="${i}">Shu nusxadan tiklash</button>` : ''}
                   </div>`).join('')}
@@ -1554,6 +1745,9 @@ function render(){
     ${state.showAddTask ? renderAddTaskModal() : ''}
     ${state.showBackup ? renderBackupModal() : ''}
     ${state.showCapture ? renderCaptureModal() : ''}
+    ${state.showAddPost ? renderAddPostModal(today) : ''}
+    ${state.showLibrary ? renderLibraryModal() : ''}
+    ${state.showImportScripts ? renderImportScriptsModal() : ''}
     ${renderFab()}
     ${renderUndoBar()}
   `;
@@ -1741,6 +1935,7 @@ function renderBackupModal(){
 
         <div class="rp-info-box">
           <div class="rp-info-row"><span>Bu qurilmada</span><b>${state.plans.length} reja &middot; ${state.tasks.length} vazifa &middot; ${state.ideas.length} fikr</b></div>
+          ${(state.posts.length || state.scripts.length) ? `<div class="rp-info-row"><span>Kontent</span><b>${state.posts.length} ta &middot; ${state.scripts.length} matn</b></div>` : ''}
           <div class="rp-info-row"><span>Doimiy xotira</span><span>${persTxt}</span></div>
           <div class="rp-info-row"><span>Oxirgi zaxira</span><b>${lastTxt}</b></div>
           <div class="rp-info-row"><span>Bulut</span><span>${cloudStatusTxt()}</span></div>
@@ -1776,7 +1971,7 @@ function renderBanner(today){
 
 function renderTabbar(){
   const n = state.ideas.length;
-  const tabs = [['rejalar','Rejalar'], ['kunlik','Kunlik'], ['hisobot','Hisobot'], ['fikrlar','Fikrlar']];
+  const tabs = [['rejalar','Rejalar'], ['kunlik','Kunlik'], ['kontent','Kontent'], ['hisobot','Hisobot'], ['fikrlar','Fikrlar']];
   return `<div class="rp-tabbar">
     ${tabs.map(([id,label]) => {
       const badge = (id==='fikrlar' && n>0 && state.tab!=='fikrlar') ? `<i class="rp-badge">${n}</i>` : '';
@@ -1829,7 +2024,8 @@ function renderIdeaCard(it){
 }
 
 function renderFab(){
-  if (state.showAddPlan || state.showAddTask || state.showBackup || state.showCapture) return '';
+  if (state.showAddPlan || state.showAddTask || state.showBackup || state.showCapture
+      || state.showAddPost || state.showLibrary || state.showImportScripts) return '';
   return `<button class="rp-fab" data-action="open-capture" aria-label="Fikr yozib olish">&#43;</button>`;
 }
 
@@ -1845,10 +2041,316 @@ function renderCaptureModal(){
     </div>`;
 }
 
+// ==================== Kontent ====================
+function postsSorted(){
+  return state.posts.slice().sort((a, b) => {
+    if (a.date && b.date) return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0);
+    if (a.date) return -1;
+    if (b.date) return 1;
+    return (b.createdAt || 0) - (a.createdAt || 0);
+  });
+}
+
+// "Faol" = bugungi yoki keyingi kunga mo'ljallangan, yoki sanasiz zaxira.
+// O'tgan kunga qo'yilgani chiqib ketgan deb hisoblanadi - shuning uchun
+// hisobdan tushadi va zaxirani sun'iy ko'paytirmaydi.
+function activePosts(todayKey){
+  return state.posts.filter(p => !p.date || p.date >= todayKey);
+}
+
+function contentStats(todayKey){
+  const act = activePosts(todayKey);
+  const counts = {};
+  for (const st of CONTENT_STAGES) counts[st.id] = act.filter(p => p[st.id + 'At']).length;
+  return { total: act.length, counts, ready: counts.montaj };
+}
+
+function stageOn(post, stageId){ return !!post[stageId + 'At']; }
+
+// Bosqichni bosganda tartib avtomatik saqlanadi:
+// yoqilsa - oldingilari ham yoqiladi, o'chirilsa - keyingilari ham o'chadi.
+function togglePostStage(postId, stageId){
+  const i = state.posts.findIndex(p => p.id === postId);
+  if (i < 0) return;
+  const idx = CONTENT_STAGES.findIndex(x => x.id === stageId);
+  if (idx < 0) return;
+  const p = Object.assign({}, state.posts[i]);
+  const now = Date.now();
+  const turningOn = !p[stageId + 'At'];
+  if (turningOn) {
+    for (let k = 0; k <= idx; k++) if (!p[STAGE_KEYS[k]]) p[STAGE_KEYS[k]] = now;
+  } else {
+    for (let k = idx; k < STAGE_KEYS.length; k++) p[STAGE_KEYS[k]] = null;
+  }
+  state.posts = state.posts.map(x => x.id === postId ? p : x);
+  commit();
+  if (turningOn && stageId === 'montaj') toast('Tayyor — Instagramga qo\'yish mumkin');
+  render();
+}
+
+function addPost(title, date, scriptId){
+  const t = String(title || '').trim();
+  if (!t) return null;
+  const now = Date.now();
+  const p = { id: uid(), title: t.slice(0, 300), date: isValidDateKey(date) ? date : null,
+              scriptId: scriptId || null, note: '', createdAt: now, editedAt: now };
+  for (const k of STAGE_KEYS) p[k] = null;
+  if (scriptId) p.matnAt = now;              // matn tayyor - kutubxonadan olindi
+  state.posts = state.posts.concat([p]);
+  if (scriptId) markScriptUsed(scriptId, true);
+  commit();
+  return p;
+}
+
+function deletePost(id){
+  const p = state.posts.find(x => x.id === id);
+  if (!p) return;
+  const nb = neighborsOf(state.posts, id);
+  state.posts = state.posts.filter(x => x.id !== id);
+  commit(); render();
+  showUndo("Kontent o'chirildi", () => {
+    state.posts = restoreInto(state.posts, p, nb.prevId, nb.nextId);
+    commit(); render();
+  });
+}
+
+// ---------- Matn kutubxonasi ----------
+function isScriptUsed(id){ return state.usedScripts.indexOf(id) >= 0; }
+
+function markScriptUsed(id, used){
+  const has = isScriptUsed(id);
+  if (used === has) return;
+  state.usedScripts = used
+    ? state.usedScripts.concat([id])
+    : state.usedScripts.filter(x => x !== id);
+  commit();
+}
+
+function libraryRows(){
+  const q = String(state.libQuery || '').trim().toLowerCase();
+  let list = state.scripts;
+  if (state.libFilter === 'yangi') list = list.filter(x => !isScriptUsed(x.id));
+  else if (state.libFilter === 'ishlatilgan') list = list.filter(x => isScriptUsed(x.id));
+  if (q) list = list.filter(x => x.text.toLowerCase().indexOf(q) >= 0 || (x.tag || '').toLowerCase().indexOf(q) >= 0);
+  return list;
+}
+
+// Import ikki bosqichli: avval nima bo'lishini ko'rsatamiz, keyin tasdiq.
+function prepareScriptImport(raw){
+  const parsed = scriptsFromTable(parseTable(raw));
+  const found = parsed.items;
+  if (!found.length) {
+    state.scriptPreview = { error: "Matn topilmadi. Google Sheets'dan ustunni nusxalab qo'ying." };
+    render(); return;
+  }
+  if (found.length > 20000) {
+    state.scriptPreview = { error: 'Juda ko\'p (20000+). Qismlarga bo\'lib qo\'ying.' };
+    render(); return;
+  }
+  const have = new Set(state.scripts.map(x => x.id));
+  const seenNow = new Set();
+  const fresh = [];
+  let dup = 0;
+  for (const f of found) {
+    const id = scriptKey(f.text);
+    if (seenNow.has(id)) { dup++; continue; }
+    seenNow.add(id);
+    if (have.has(id)) { dup++; continue; }
+    fresh.push({ id, text: f.text.slice(0, 8000), tag: f.tag.slice(0, 60), createdAt: Date.now() });
+  }
+  state.scriptPreview = {
+    total: found.length, fresh, dup, header: parsed.header,
+    usedAmong: fresh.filter(x => isScriptUsed(x.id)).length,
+    bytes: fresh.reduce((n, x) => n + x.text.length, 0),
+  };
+  render();
+}
+
+function confirmScriptImport(){
+  const pv = state.scriptPreview;
+  if (!pv || pv.error || !pv.fresh.length) return;
+  state.scripts = state.scripts.concat(pv.fresh);
+  state.scriptPreview = null;
+  state.showImportScripts = false;
+  commit(); render();
+  toast(pv.fresh.length + ' ta matn qo\'shildi');
+}
+
+function scriptToPost(id){
+  const sc = state.scripts.find(x => x.id === id);
+  if (!sc) return;
+  const title = sc.text.replace(/\s+/g, ' ').trim().slice(0, 70);
+  addPost(title, null, id);
+  state.showLibrary = false;
+  render();
+  toast('Kontent qo\'shildi — matn tayyor');
+}
+
+function renderContentTab(today){
+  const todayKey = toKey(today);
+  const st = contentStats(todayKey);
+  const lib = state.scripts.length;
+  const yangi = state.scripts.filter(x => !isScriptUsed(x.id)).length;
+
+  const sorted = postsSorted();
+  const act = sorted.filter(p => !p.date || p.date >= todayKey);
+  const past = sorted.filter(p => p.date && p.date < todayKey).reverse();
+
+  const body = act.length === 0
+    ? `<div class="rp-empty"><p>Hali kontent yo'q. Matn kutubxonasidan oling yoki qo'lda qo'shing.</p></div>`
+    : `<div class="rp-list">${act.map(p => renderPostCard(p, todayKey)).join('')}</div>`;
+
+  return `
+    ${renderFunnel(st)}
+    <div class="rp-content-actions">
+      <button class="rp-add-btn" data-action="open-add-post">&#43; Yangi kontent</button>
+      <button class="rp-add-btn" data-action="open-library">Matn kutubxonasi</button>
+    </div>
+    ${lib ? `<div class="rp-lib-hint">Kutubxonada <b>${yangi}</b> ta ishlatilmagan matn (jami ${lib})</div>` : ''}
+    ${body}
+    ${past.length ? `
+      <button class="rp-link-btn rp-past-toggle" data-action="toggle-past">${state.showPastPosts ? 'O\'tgan kunlarni yashirish' : `O'tgan kunlar (${past.length})`}</button>
+      ${state.showPastPosts ? `<div class="rp-list rp-list-past">${past.map(p => renderPostCard(p, todayKey)).join('')}</div>` : ''}
+    ` : ''}`;
+}
+
+function renderFunnel(st){
+  const max = Math.max(1, st.counts.matn);
+  const ready = st.ready;
+  // Zaxira kunlarda: kuniga bitta joylansa, tayyor kontent shuncha kunga yetadi
+  const tone = ready >= 7 ? 'ok' : (ready >= 3 ? 'warn' : 'bad');
+  const msg = ready >= 7 ? 'Yetarli zaxira'
+            : (ready >= 3 ? 'Zaxira kamayyapti' : (ready > 0 ? 'Zaxira tugay deyapti' : 'Tayyor kontent yo\'q'));
+  return `
+    <div class="rp-card rp-funnel">
+      <div class="rp-funnel-head">
+        <div>
+          <div class="rp-funnel-big rp-tone-${tone}">${ready} kun</div>
+          <div class="rp-funnel-sub">${msg} &middot; kuniga 1 ta hisobida</div>
+        </div>
+      </div>
+      <div class="rp-funnel-bars">
+        ${CONTENT_STAGES.map(sg => {
+          const n = st.counts[sg.id];
+          const w = Math.round((n / max) * 100);
+          return `<div class="rp-fn-row">
+            <span class="rp-fn-label">${sg.label}</span>
+            <div class="rp-fn-track"><div class="rp-fn-fill rp-fn-${sg.id}" style="width:${w}%"></div></div>
+            <b class="rp-fn-num">${n}</b>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+}
+
+function renderPostCard(p, todayKey){
+  const dateTxt = p.date
+    ? (p.date === todayKey ? 'Bugun' : fmtUz(parseKey(p.date)))
+    : 'Zaxira';
+  const late = p.date && p.date < todayKey && !p.montajAt;
+  return `
+    <div class="rp-card rp-post">
+      <div class="rp-post-top">
+        <span class="rp-post-date${p.date === todayKey ? ' rp-post-today' : ''}${late ? ' rp-post-late' : ''}">${esc(dateTxt)}</span>
+        <div class="rp-post-title">${esc(p.title)}</div>
+        <button class="rp-icon-btn" data-action="delete-post" data-id="${esc(p.id)}" aria-label="O'chirish">&#10005;</button>
+      </div>
+      <div class="rp-stage-row">
+        ${CONTENT_STAGES.map(sg => `
+          <button class="rp-stage${stageOn(p, sg.id) ? ' rp-stage-on rp-stage-' + sg.id : ''}"
+                  data-action="toggle-stage" data-id="${esc(p.id)}" data-stage="${sg.id}">
+            <span class="rp-stage-tick">${stageOn(p, sg.id) ? '&#10003;' : ''}</span>${sg.label}
+          </button>`).join('')}
+      </div>
+    </div>`;
+}
+
+function renderAddPostModal(today){
+  return `
+    <div class="rp-modal-overlay" data-action="close-add-post">
+      <div class="rp-modal" data-action="noop">
+        <div class="rp-modal-header"><span>Yangi kontent</span><button class="rp-icon-btn" data-action="close-add-post">&#10005;</button></div>
+        <label class="rp-field"><span>Nomi</span>
+          <input id="f-post-title" placeholder="Masalan: 3 ta arabcha so'z" maxlength="300" />
+        </label>
+        <label class="rp-field"><span>Qaysi kunga (ixtiyoriy)</span>
+          <input id="f-post-date" type="date" value="" />
+        </label>
+        <button class="rp-save-btn" data-action="save-post">Qo'shish</button>
+        <p class="rp-note rp-note-small">Sanani bo'sh qoldirsangiz zaxiraga tushadi.</p>
+      </div>
+    </div>`;
+}
+
+function renderLibraryModal(){
+  const rows = libraryRows();
+  const total = state.scripts.length;
+  const yangi = state.scripts.filter(x => !isScriptUsed(x.id)).length;
+  const shown = rows.slice(0, 80);
+  const filters = [['yangi', 'Ishlatilmagan'], ['ishlatilgan', 'Ishlatilgan'], ['hammasi', 'Hammasi']];
+  return `
+    <div class="rp-modal-overlay" data-action="close-library">
+      <div class="rp-modal rp-modal-tall" data-action="noop">
+        <div class="rp-modal-header"><span>Matn kutubxonasi</span><button class="rp-icon-btn" data-action="close-library">&#10005;</button></div>
+        <div class="rp-lib-stat">${yangi} ta ishlatilmagan &middot; jami ${total}</div>
+        <button class="rp-add-btn" data-action="open-import-scripts">Matnlarni qo'yish</button>
+        ${total === 0 ? `<p class="rp-note">Google Sheets'da ustunni belgilab nusxalang, keyin shu tugmani bosib qo'ying.</p>` : `
+          <input class="rp-cloud-input" id="f-lib-q" data-draft="libq" placeholder="Qidirish..." value="${esc(state.libQuery)}" />
+          <div class="rp-pill-row rp-lib-filters">
+            ${filters.map(([id, lab]) => `<button class="rp-pill${state.libFilter === id ? ' rp-pill-active' : ''}" data-action="lib-filter" data-f="${id}">${lab}</button>`).join('')}
+          </div>
+          <div class="rp-lib-list">
+            ${shown.length === 0 ? `<div class="rp-empty">Topilmadi</div>` : shown.map(sc => {
+              const used = isScriptUsed(sc.id);
+              return `<div class="rp-lib-row${used ? ' rp-lib-used' : ''}">
+                ${sc.tag ? `<div class="rp-lib-tag">${esc(sc.tag)}</div>` : ''}
+                <div class="rp-lib-text">${esc(sc.text.slice(0, 260))}${sc.text.length > 260 ? '&hellip;' : ''}</div>
+                <div class="rp-lib-acts">
+                  <button class="rp-link-btn" data-action="script-to-post" data-id="${esc(sc.id)}">Kontent qilish</button>
+                  <button class="rp-link-btn" data-action="toggle-used" data-id="${esc(sc.id)}">${used ? 'Ishlatilmagan deb belgilash' : 'Ishlatilgan deb belgilash'}</button>
+                </div>
+              </div>`;
+            }).join('')}
+          </div>
+          ${rows.length > shown.length ? `<p class="rp-note rp-note-small">${rows.length} tadan ${shown.length} tasi ko'rsatildi — qidiruvdan foydalaning.</p>` : ''}
+        `}
+      </div>
+    </div>`;
+}
+
+function renderImportScriptsModal(){
+  const pv = state.scriptPreview;
+  return `
+    <div class="rp-modal-overlay" data-action="close-import-scripts">
+      <div class="rp-modal rp-modal-tall" data-action="noop">
+        <div class="rp-modal-header"><span>Matnlarni qo'yish</span><button class="rp-icon-btn" data-action="close-import-scripts">&#10005;</button></div>
+        <p class="rp-note">Google Sheets'da matnlar ustunini belgilang &rarr; nusxalang &rarr; shu yerga qo'ying. Bir necha ustun bo'lsa, eng uzuni matn deb olinadi, qolgani mavzu bo'ladi.</p>
+        <textarea id="f-scripts" class="rp-idea-input" rows="6" placeholder="Bu yerga qo'ying..."></textarea>
+        ${pv && pv.error ? `<div class="rp-cloud-err">${esc(pv.error)}</div>` : ''}
+        ${pv && !pv.error ? `
+          <div class="rp-import-box">
+            <div class="rp-import-title">Nima qo'shiladi</div>
+            ${pv.header ? `<div class="rp-import-msg">Birinchi qator sarlavha deb hisoblandi va tashlandi: &laquo;${esc(pv.header)}&raquo;</div>` : ''}
+            <div class="rp-import-row"><span>Topildi</span><b>${pv.total}</b></div>
+            <div class="rp-import-row"><span>Yangi</span><b>${pv.fresh.length}</b></div>
+            <div class="rp-import-row"><span>Allaqachon bor</span><b>${pv.dup}</b></div>
+            ${pv.usedAmong ? `<div class="rp-import-msg">${pv.usedAmong} tasi ilgari ishlatilgan deb belgilangan — belgisi saqlanadi.</div>` : ''}
+            ${pv.totalKB > 2500 ? `<div class="rp-import-msg rp-import-warn">Kutubxona ${pv.totalKB} KB bo'ladi — bu brauzer chegarasiga yaqinlashyapti. Eski matnlarni tozalash yoki kamroq qo'yish tavsiya etiladi.</div>` : ''}
+            <div class="rp-import-actions">
+              <button class="rp-save-btn" data-action="confirm-scripts">Qo'shish</button>
+              <button class="rp-link-btn" data-action="cancel-scripts">Bekor qilish</button>
+            </div>
+          </div>` : `<button class="rp-save-btn" data-action="preview-scripts">Tekshirish</button>`}
+        <p class="rp-note rp-note-small">Matnlar shu qurilmada va zaxira faylida saqlanadi. Bulutga faqat qaysilari ishlatilgani yuboriladi.</p>
+      </div>
+    </div>`;
+}
+
 function renderTab(today){
   if (state.tab==='rejalar') return renderPlansTab(today);
   if (state.tab==='kunlik') return renderDailyTab();
   if (state.tab==='fikrlar') return renderIdeasTab();
+  if (state.tab==='kontent') return renderContentTab(today);
   return renderReportsTab(today);
 }
 
@@ -2437,6 +2939,36 @@ const handlers = {
       render();
     });
   },
+  'open-add-post': () => { state.showAddPost = true; render(); },
+  'close-add-post': () => { state.showAddPost = false; render(); },
+  'save-post': () => {
+    const t = document.getElementById('f-post-title');
+    const d = document.getElementById('f-post-date');
+    const title = ((t && t.value) || '').trim();
+    if (!title) { toast('Nom kiriting'); return; }
+    addPost(title, (d && d.value) || null, null);
+    state.showAddPost = false;
+    render();
+  },
+  'toggle-stage': (btn) => togglePostStage(btn.dataset.id, btn.dataset.stage),
+  'delete-post': (btn) => deletePost(btn.dataset.id),
+  'toggle-past': () => { state.showPastPosts = !state.showPastPosts; render(); },
+
+  'open-library': () => { state.showLibrary = true; state.libQuery = ''; render(); },
+  'close-library': () => { state.showLibrary = false; render(); },
+  'lib-filter': (btn) => { state.libFilter = btn.dataset.f; render(); },
+  'toggle-used': (btn) => { markScriptUsed(btn.dataset.id, !isScriptUsed(btn.dataset.id)); render(); },
+  'script-to-post': (btn) => scriptToPost(btn.dataset.id),
+
+  'open-import-scripts': () => { state.showImportScripts = true; state.scriptPreview = null; render(); },
+  'close-import-scripts': () => { state.showImportScripts = false; state.scriptPreview = null; render(); },
+  'preview-scripts': () => {
+    const ta = document.getElementById('f-scripts');
+    prepareScriptImport((ta && ta.value) || '');
+  },
+  'confirm-scripts': () => confirmScriptImport(),
+  'cancel-scripts': () => { state.scriptPreview = null; render(); },
+
   'scan-storage': () => runScan(),
   'restore-scan': (btn) => restoreFromScan(btn.dataset.idx),
   'cloud-force': () => {
@@ -2518,6 +3050,26 @@ document.addEventListener('input', (e) => {
   else if (el.dataset && el.dataset.draft === 'idea') ideaDraft = el.value;
   else if (el.dataset && el.dataset.draft === 'plan') planDraft[el.dataset.field] = el.value;
   else if (el.dataset && el.dataset.draft === 'task') taskDraft[el.dataset.field] = el.value;
+  else if (el.dataset && el.dataset.draft === 'libq') {
+    // Qidiruvda render() maydonni qayta yaratadi va fokus yo'qoladi - shuning uchun
+    // faqat ro'yxat qismini yangilaymiz.
+    state.libQuery = el.value;
+    const box = document.querySelector('.rp-lib-list');
+    if (box) {
+      const rows = libraryRows().slice(0, 80);
+      box.innerHTML = rows.length === 0 ? '<div class="rp-empty">Topilmadi</div>' : rows.map(sc => {
+        const used = isScriptUsed(sc.id);
+        return '<div class="rp-lib-row' + (used ? ' rp-lib-used' : '') + '">' +
+          (sc.tag ? '<div class="rp-lib-tag">' + esc(sc.tag) + '</div>' : '') +
+          '<div class="rp-lib-text">' + esc(sc.text.slice(0, 260)) + (sc.text.length > 260 ? '&hellip;' : '') + '</div>' +
+          '<div class="rp-lib-acts">' +
+            '<button class="rp-link-btn" data-action="script-to-post" data-id="' + esc(sc.id) + '">Kontent qilish</button>' +
+            '<button class="rp-link-btn" data-action="toggle-used" data-id="' + esc(sc.id) + '">' +
+              (used ? 'Ishlatilmagan deb belgilash' : 'Ishlatilgan deb belgilash') + '</button>' +
+          '</div></div>';
+      }).join('');
+    }
+  }
 });
 
 // Fikr oynasida Enter - saqlash, Shift+Enter - yangi qator

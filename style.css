@@ -9,7 +9,7 @@ body {
 }
 #app {
   min-height: 100vh;
-  padding: 20px 16px 40px;
+  padding: 20px 16px 96px;
   max-width: 480px;
   margin: 0 auto;
 }
@@ -347,3 +347,62 @@ body {
 .rp-diag-row .rp-link-btn{ padding:6px 0 0; font-size:13px; }
 .rp-diag-bad b{ font-size:13px; color:#9B3F26; }
 .rp-diag-bad span{ font-size:12.5px; color:#9B3F26; }
+
+/* ---------- Kontent quvuri ---------- */
+.rp-tabbar .rp-tab { font-size:12px; padding:9px 2px; }
+
+.rp-funnel { padding:16px; }
+.rp-funnel-head { margin-bottom:14px; }
+.rp-funnel-big { font-family:'Fraunces',serif; font-weight:700; font-size:30px; line-height:1.05; }
+.rp-funnel-sub { font-size:12.5px; color:#8A7259; margin-top:3px; }
+.rp-tone-ok   { color:#5F8C55; }
+.rp-tone-warn { color:#A6813F; }
+.rp-tone-bad  { color:#B75B3D; }
+
+.rp-funnel-bars { display:flex; flex-direction:column; gap:8px; }
+.rp-fn-row { display:flex; align-items:center; gap:10px; }
+.rp-fn-label { font-size:12.5px; color:#8A7259; width:52px; flex-shrink:0; }
+.rp-fn-track { flex:1; height:10px; background:#EFE4D2; border-radius:6px; overflow:hidden; }
+.rp-fn-fill { height:100%; border-radius:6px; transition: width .5s cubic-bezier(.34,1.2,.64,1); }
+.rp-fn-matn   { background:#B75B3D; }
+.rp-fn-video  { background:#6B7FA6; }
+.rp-fn-montaj { background:#5F8C55; }
+.rp-fn-num { font-family:'Fraunces',serif; font-size:14px; color:#3A2A1C; width:28px; text-align:right; flex-shrink:0; font-variant-numeric:tabular-nums; }
+
+.rp-content-actions { display:flex; gap:8px; margin:14px 0 4px; }
+.rp-content-actions .rp-add-btn { margin-top:0; font-size:13.5px; padding:12px 8px; }
+
+.rp-post { padding:12px 14px 13px; }
+.rp-post-top { display:flex; align-items:center; gap:9px; }
+.rp-post-date { font-size:11.5px; color:#A08F76; background:#F6EFE3; border-radius:7px; padding:3px 8px; flex-shrink:0; white-space:nowrap; }
+.rp-post-today { background:#FBEFE0; color:#A6813F; font-weight:600; }
+.rp-post-late { background:#F7E7E1; color:#B75B3D; }
+.rp-post-title { flex:1; min-width:0; font-size:14.5px; color:#3A2A1C; line-height:1.35; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+
+.rp-stage-row { display:flex; gap:6px; margin-top:11px; }
+.rp-stage { flex:1; padding:9px 4px; border-radius:10px; border:1px solid #DCCBA9; background:#F6EFE3; color:#8A7259; font-size:12.5px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:4px; transition: transform .15s cubic-bezier(.34,1.56,.64,1), background .2s, color .2s, border-color .2s; }
+.rp-stage:active { transform: scale(0.94); }
+.rp-stage-tick { font-size:11px; line-height:1; }
+.rp-stage-on { color:#FFFCF6; border-color:transparent; font-weight:600; }
+.rp-stage-on.rp-stage-matn   { background:#B75B3D; }
+.rp-stage-on.rp-stage-video  { background:#6B7FA6; }
+.rp-stage-on.rp-stage-montaj { background:#5F8C55; }
+
+.rp-past-toggle { display:block; margin:16px auto 0; }
+.rp-list-past { margin-top:10px; opacity:0.62; }
+
+/* ---------- Matn kutubxonasi ---------- */
+.rp-modal-tall { max-height:calc(var(--rp-vh, 100vh) - 8px); }
+.rp-lib-stat { font-size:13px; color:#8A7259; margin-bottom:10px; }
+.rp-lib-filters { margin:10px 0 12px; }
+.rp-lib-list { display:flex; flex-direction:column; gap:8px; }
+.rp-lib-row { border:1px solid #EBDFC7; border-radius:12px; padding:10px 12px; background:#FFFCF6; }
+.rp-lib-used { opacity:0.55; background:#F6EFE3; }
+.rp-lib-tag { font-size:11px; color:#A08F76; margin-bottom:3px; }
+.rp-lib-text { font-size:13.5px; color:#3A2A1C; line-height:1.45; white-space:pre-wrap; word-break:break-word; }
+.rp-lib-acts { display:flex; flex-wrap:wrap; gap:6px 14px; margin-top:8px; }
+.rp-lib-acts .rp-link-btn { padding:4px 0; font-size:12.5px; }
+
+.rp-lib-hint { font-size:12.5px; color:#8A7259; text-align:center; margin:9px 0 2px; }
+.rp-lib-hint b { color:#3A2A1C; font-family:'Fraunces',serif; }
+.rp-lib-filters .rp-pill-active { background:#C08A2E; color:#FFFCF6; border-color:transparent; font-weight:600; }

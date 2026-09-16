@@ -15,7 +15,7 @@
 (function (global) {
   'use strict';
 
-  const COLLECTIONS = ['plans', 'tasks', 'ideas'];
+  const COLLECTIONS = ['plans', 'tasks', 'ideas', 'posts'];
 
   function createSync(opts) {
     const backend = opts.backend;
@@ -35,7 +35,7 @@
     // Remote'dan kelgan oxirgi editedAt, entity bo'yicha
     const remoteEdited = new Map();
     // Serverda HAQIQATAN nechta yozuv borligi. Taxmin emas - serverdan kelgan son.
-    const remoteCounts = { plans: null, tasks: null, ideas: null };
+    const remoteCounts = { plans: null, tasks: null, ideas: null, posts: null };
 
     const key = (coll, id) => coll + '/' + id;
     const editedOf = e => Number(e && e.editedAt) || 0;
@@ -116,8 +116,12 @@
           }
         }
       }
-      if (JSON.stringify(prev.categories || []) !== JSON.stringify(next.categories || [])) {
-        pushEntity('meta', 'state', { id: 'state', categories: next.categories || [], editedAt: Date.now() });
+      if (JSON.stringify(prev.categories || []) !== JSON.stringify(next.categories || []) ||
+          JSON.stringify(prev.usedScripts || []) !== JSON.stringify(next.usedScripts || [])) {
+        pushEntity('meta', 'state', { id: 'state',
+          categories: next.categories || [],
+          usedScripts: next.usedScripts || [],
+          editedAt: Date.now() });
       }
     }
 
@@ -129,11 +133,12 @@
       if (coll === 'meta') {
         const d = docs.find(x => x.id === 'state');
         if (d) remoteEdited.set(key('meta', 'state'), editedOf(d));
-        if (d && Array.isArray(d.categories)) {
+        if (d) {
           const q = queue.get(key('meta', 'state'));
           if (!q || editedOf(q.doc) <= editedOf(d)) {
-            patch.categories = d.categories;
-            if (q) queue.delete(key('meta', 'state'));
+            if (Array.isArray(d.categories)) patch.categories = d.categories;
+            if (Array.isArray(d.usedScripts)) patch.usedScripts = d.usedScripts;
+            if (q && Object.keys(patch).length) queue.delete(key('meta', 'state'));
           }
         }
         if (Object.keys(patch).length) applyLocal(patch);
@@ -231,9 +236,10 @@
         }
       }
       const cats = (local.categories || []);
+      const used = (local.usedScripts || []);
       const mk = key('meta', 'state');
-      if (cats.length && !remoteEdited.has(mk)) {
-        pushEntity('meta', 'state', { id: 'state', categories: cats, editedAt: Date.now() });
+      if ((cats.length || used.length) && !remoteEdited.has(mk)) {
+        pushEntity('meta', 'state', { id: 'state', categories: cats, usedScripts: used, editedAt: Date.now() });
       }
     }
 
@@ -246,7 +252,10 @@
         for (const e of (local[coll] || [])) { pushEntity(coll, e.id, Object.assign({}, e, { deletedAt: null })); n++; }
       }
       const cats = local.categories || [];
-      if (cats.length) pushEntity('meta', 'state', { id: 'state', categories: cats, editedAt: Date.now() });
+      const used = local.usedScripts || [];
+      if (cats.length || used.length) {
+        pushEntity('meta', 'state', { id: 'state', categories: cats, usedScripts: used, editedAt: Date.now() });
+      }
       scheduleFlush();
       return n;
     }
