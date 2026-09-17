@@ -2513,8 +2513,12 @@ function reserveStart(todayKey){
 // belgilagan startdan boshlaydi va faqat band SANALARNI tashlab o'tadi.
 // Masalan, 5-oktabr band bo'lsa, 2–4 va 6-oktabrlar to'ldiriladi.
 function splitStart(todayKey){
-  const configured = isValidDateKey(state.contentStartDate) ? state.contentStartDate : todayKey;
-  return configured > todayKey ? configured : todayKey;
+  if (isValidDateKey(state.contentStartDate)) return state.contentStartDate > todayKey ? state.contentStartDate : todayKey;
+  // Sozlama hali qo'yilmagan bo'lsa, qo'lda kiritilgan birinchi kelajakdagi
+  // video sanasidan boshlaymiz. Shunda 1 va 10-oktabr band qilingan bo'lsa,
+  // avtomatika bugundan emas, 1-oktabrdan bo'shliqlarni to'ldiradi.
+  const firstPlanned = state.posts.map(p => p.date).filter(d => d && d >= todayKey).sort()[0];
+  return firstPlanned || todayKey;
 }
 
 function scriptReservePlan(todayKey, count, perDay){

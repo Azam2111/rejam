@@ -557,6 +557,12 @@ function serve(port){
   });
   check('avto-taqsimlash 5-oktabrni chetlab o\'tadi', JSON.stringify(gaps.preview) === JSON.stringify(['2026-10-02','2026-10-03','2026-10-04','2026-10-06']), JSON.stringify(gaps.preview));
   check('bo\'sh kunlarga matnlar joylandi', gaps.made === 4 && JSON.stringify(gaps.dates) === JSON.stringify(['2026-10-02','2026-10-03','2026-10-04','2026-10-06']), JSON.stringify(gaps));
+  const inferredStart = await page.evaluate(() => {
+    state.contentStartDate = '';
+    state.posts = [{ id:'first-oct', title:'Tayyor', date:'2026-10-01', scriptId:null }];
+    return splitStart('2026-09-17');
+  });
+  check('boshlanish sozlanmasa birinchi tayyor video sanasidan olinadi', inferredStart === '2026-10-01', inferredStart);
 
   await clear();
   const manualDate = await page.evaluate(() => {
