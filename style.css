@@ -445,3 +445,20 @@ body {
 .rp-bridge-ready { border-color:#C08A2E; color:#8A6420; }
 .rp-bridge-more { display:block; margin:12px auto 0; }
 .rp-report-box { background:#FBF8F2; border:1px solid #EBDFC7; border-radius:12px; padding:13px 14px; font-size:14px; line-height:1.55; color:#3A2A1C; word-break:break-word; margin-bottom:14px; }
+
+/* ---------- Tayyorlik sanasi ---------- */
+.rp-ready { padding:16px; }
+.rp-ready-big { font-family:'Fraunces',serif; font-weight:700; font-size:25px; line-height:1.1; }
+.rp-ready-sub { font-size:12.5px; color:#8A7259; margin-top:4px; }
+.rp-ready-row { display:flex; gap:16px; margin-top:12px; padding-top:11px; border-top:1px solid #EBDFC7; font-size:12.5px; color:#8A7259; }
+.rp-ready-row b { font-family:'Fraunces',serif; font-size:15px; color:#3A2A1C; margin-right:3px; }
+
+/* ---------- Matn zaxirasi ---------- */
+.rp-bank { display:block; margin-top:12px; }
+.rp-bank-nums { display:flex; align-items:baseline; gap:8px; }
+.rp-bank-acts { display:flex; gap:8px; margin-top:11px; }
+.rp-bank-acts .rp-bank-btn { flex:1; }
+.rp-bank-btn2 { background:#FFFCF6; color:#3A2A1C; border:1px solid #DCCBA9; }
+.rp-bank-msg { font-size:12.5px; color:#4A6B3C; background:#EAF1E4; border-radius:9px; padding:8px 10px; margin-top:10px; line-height:1.4; }
+.rp-bank-msg-bad { color:#9B3F26; background:#F7E7E1; }
+.rp-bank-link { display:block; margin:10px auto 0; }

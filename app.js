@@ -438,6 +438,13 @@ let state = {
   showReelImport: false,
   showReport: false,
   reportDate: null,
+  sheetUrl: '',
+  sheetFetchedAt: 0,
+  sheetBusy: false,
+  sheetMsg: null,
+  showSheet: false,
+  showSplit: false,
+  splitCount: '',
   showPick: false,
   showPastPosts: false,
   newCatName: '',
@@ -832,6 +839,7 @@ function validateEnvelope(raw){
       updatedAt,
       deviceId: cleanText(raw.deviceId, 64) || deviceId(),
       plans, tasks, ideas, categories: cats, posts, scripts, usedScripts,
+      sheetUrl: cleanText(raw.sheetUrl, 400).trim(),
     },
     counts: countsOf({ plans, tasks, ideas, posts, scripts }),
   };
@@ -864,6 +872,7 @@ function currentEnvelope(bumpRevision){
     deviceId: deviceId(),
     plans: state.plans, tasks: state.tasks, ideas: state.ideas, categories: state.categories,
     posts: state.posts, scripts: state.scripts, usedScripts: state.usedScripts,
+    sheetUrl: state.sheetUrl,
   };
 }
 
@@ -1111,6 +1120,7 @@ async function bootstrapStorage(){
     state.posts = best.env.posts || [];
     state.scripts = best.env.scripts || [];
     state.usedScripts = best.env.usedScripts || [];
+    state.sheetUrl = best.env.sheetUrl || '';
     revisionCounter = best.env.revision;
     if (best.issues && best.issues.length) state.readErrors.push(...best.issues.slice(0, 5));
 
@@ -1805,6 +1815,8 @@ function render(){
     ${state.showLibrary ? renderLibraryModal() : ''}
     ${state.showImportScripts ? renderImportScriptsModal() : ''}
     ${state.showPick ? renderPickModal() : ''}
+    ${state.showSheet ? renderSheetModal() : ''}
+    ${state.showSplit ? renderSplitModal() : ''}
     ${state.showReelImport ? renderReelImportModal() : ''}
     ${state.showReport ? renderReportModal() : ''}
     ${renderFab()}
@@ -2086,7 +2098,7 @@ function renderIdeaCard(it){
 function renderFab(){
   if (state.showAddPlan || state.showAddTask || state.showBackup || state.showCapture
       || state.showAddPost || state.showLibrary || state.showImportScripts || state.showPick
-      || state.showReelImport || state.showReport) return '';
+      || state.showReelImport || state.showReport || state.showSheet || state.showSplit) return '';
   return `<button class="rp-fab" data-action="open-capture" aria-label="Fikr yozib olish">&#43;</button>`;
 }
 
@@ -2283,6 +2295,119 @@ function reportForDay(dateKey){
   return { text: parts.length ? dateKey + ': ' + parts.join('; ') : '', counts: lines };
 }
 
+// ---------- Google Sheets ulanishi ----------
+// Sheet'da faqat matnlar turadi. Ilova uni o'zi o'qiydi - qo'lda nusxalash shart emas.
+// Buning uchun jadval "Vebda nashr qilingan" bo'lishi kerak, aks holda brauzer
+// boshqa saytning ma'lumotini o'qishga ruxsat bermaydi.
+function sheetCsvUrl(raw){
+  const u = String(raw == null ? '' : raw).trim();
+  if (!u) return null;
+  if (!/^https:\/\/docs\.google\.com\/spreadsheets\//.test(u)) return null;
+  // Nashr qilingan havola: .../d/e/2PACX-.../pub...
+  if (/\/d\/e\//.test(u)) {
+    const base = u.split('?')[0].replace(/\/(pubhtml|pub)$/, '/pub');
+    return base + '?output=csv';
+  }
+  // Oddiy havola: .../d/{ID}/edit  -> gviz (havolasi bor har kim ko'ra oladigan bo'lsa ishlaydi)
+  const m = u.match(/\/d\/([A-Za-z0-9_-]{20,})/);
+  if (m) return 'https://docs.google.com/spreadsheets/d/' + m[1] + '/gviz/tq?tqx=out:csv';
+  return null;
+}
+
+async function fetchSheet(silent){
+  const url = sheetCsvUrl(state.sheetUrl);
+  if (!url) { state.sheetMsg = { bad: true, text: "Havola noto'g'ri. Google Sheets havolasini qo'ying." }; render(); return; }
+  state.sheetBusy = true; state.sheetMsg = null; render();
+  let text = null, err = null;
+  try {
+    const r = await fetch(url, { cache: 'no-store' });
+    if (!r.ok) throw new Error('Server javobi: ' + r.status);
+    text = await r.text();
+    if (/<html/i.test(text.slice(0, 200))) throw new Error('Jadval ochiq emas');
+  } catch (e) {
+    err = (e && e.message) || 'Ulanib bo\'lmadi';
+  }
+  state.sheetBusy = false;
+  if (err) {
+    state.sheetMsg = { bad: true, text: err + '. Jadvalni "Vebda nashr qilish" qilganingizga ishonch hosil qiling.' };
+    render(); return;
+  }
+  const parsed = scriptsFromTable(parseTable(text));
+  const have = new Set(state.scripts.map(x => x.id));
+  const fresh = [];
+  for (const f of parsed.items) {
+    const id = scriptKey(f.text);
+    if (have.has(id)) continue;
+    have.add(id);
+    fresh.push({ id, text: f.text.slice(0, 8000), tag: f.tag.slice(0, 60), createdAt: Date.now() });
+  }
+  if (fresh.length) state.scripts = state.scripts.concat(fresh);
+  state.sheetFetchedAt = Date.now();
+  state.sheetMsg = { bad: false, text: fresh.length
+    ? fresh.length + ' ta yangi matn olindi'
+    : 'Yangi matn yo\'q — hammasi allaqachon bor' };
+  commit(); render();
+  if (!silent && fresh.length) toast(fresh.length + ' ta yangi matn');
+}
+
+// ---------- Kunlarga bo'lish ----------
+// Matn zaxirasidan N ta matnni ketma-ket bo'sh kunlarga taqsimlaydi.
+function busyDates(){ return new Set(state.posts.map(p => p.date).filter(Boolean)); }
+
+function nextFreeDates(n, fromDate){
+  const busy = busyDates();
+  const out = [];
+  let d = new Date(fromDate);
+  let guard = 0;
+  while (out.length < n && guard++ < 2000) {
+    const k = toKey(d);
+    if (!busy.has(k)) { out.push(k); busy.add(k); }
+    d = addDays(d, 1);
+  }
+  return out;
+}
+
+function splitIntoDays(count){
+  const pool = unusedScripts();
+  const n = Math.max(0, Math.min(Number(count) || 0, pool.length));
+  if (!n) return 0;
+  const today = new Date();
+  const dates = nextFreeDates(n, today);
+  const now = Date.now();
+  const add = [];
+  for (let i = 0; i < n; i++) {
+    const sc = pool[i];
+    add.push({
+      id: uid(),
+      title: sc.text.replace(/\s+/g, ' ').trim().slice(0, 70),
+      ref: '', date: dates[i], scriptId: sc.id, note: '',
+      createdAt: now, editedAt: now,
+      matnAt: now, videoAt: null, montajAt: null,
+    });
+  }
+  state.posts = state.posts.concat(add);
+  state.usedScripts = state.usedScripts.concat(pool.slice(0, n).map(x => x.id));
+  commit();
+  return n;
+}
+
+// ---------- Qaysi sanagacha tayyor ----------
+// Bugundan boshlab uzluksiz yuramiz: kun uchun montaji tayyor kontent bo'lsa - davom.
+// Bo'shliq chiqsa - to'xtaymiz. Chunki bo'shliq bor kun "tayyor" emas.
+function readyThrough(todayKey){
+  const byDate = new Map();
+  for (const p of state.posts) if (p.date) byDate.set(p.date, p);
+  let d = parseKey(todayKey), last = null, guard = 0;
+  while (guard++ < 400) {
+    const k = toKey(d);
+    const p = byDate.get(k);
+    if (!p || !p.montajAt) break;
+    last = k;
+    d = addDays(d, 1);
+  }
+  return last;
+}
+
 // ---------- Matn kutubxonasi ----------
 function isScriptUsed(id){ return state.usedScripts.indexOf(id) >= 0; }
 
@@ -2364,8 +2489,7 @@ function scriptToPost(id){
 function renderContentTab(today){
   const todayKey = toKey(today);
   const st = contentStats(todayKey);
-  const lib = state.scripts.length;
-  const yangi = state.scripts.filter(x => !isScriptUsed(x.id)).length;
+  const yangi = unusedScripts().length;
 
   const sorted = postsSorted();
   const bugun  = sorted.filter(p => p.date === todayKey);
@@ -2377,48 +2501,98 @@ function renderContentTab(today){
     `<div class="rp-sec-label">${label}${list.length > 1 ? ` <i>${list.length}</i>` : ''}</div>
      <div class="rp-list">${list.map(p => renderPostCard(p, todayKey)).join('')}</div>`;
 
-  const bosh = state.posts.length === 0
-    ? `<div class="rp-empty"><p>Reels OS jadvalidan bugungi ro'yxatni oling — shu yerda belgilab borasiz.</p></div>`
+  const bosh = (!state.posts.length && !state.scripts.length)
+    ? `<div class="rp-empty"><p>Avval Google Sheets'dagi matnlar jadvalini ulang — keyin hammasi o'zi ketadi.</p></div>`
     : '';
 
-  const rep = reportForDay(todayKey);
-
   return `
-    ${renderFunnel(st)}
+    ${renderReadyBar(todayKey)}
+    ${renderScriptBank(yangi)}
     ${bosh}
     ${sec('Bugun', bugun)}
     ${sec('Keyingi kunlar', keyin)}
-    ${sec('Zaxira', zaxira)}
+    ${sec('Kunga biriktirilmagan', zaxira)}
     ${past.length ? `
       <button class="rp-link-btn rp-past-toggle" data-action="toggle-past">${state.showPastPosts ? "O'tganlarni yashirish" : `O'tgan kunlar (${past.length})`}</button>
       ${state.showPastPosts ? `<div class="rp-list rp-list-past">${past.map(p => renderPostCard(p, todayKey)).join('')}</div>` : ''}` : ''}
-
-    <div class="rp-bridge">
-      <div class="rp-bridge-title">Reels OS jadvali bilan</div>
-      <button class="rp-add-btn" data-action="open-reel-import">Jadvaldan ro'yxat olish</button>
-      <button class="rp-add-btn${rep.text ? ' rp-bridge-ready' : ''}" data-action="open-report">Jadval uchun hisobot${rep.text ? ' · tayyor' : ''}</button>
-      <button class="rp-link-btn rp-bridge-more" data-action="open-add-post">Qo'lda kontent qo'shish</button>
-    </div>
-
-    ${renderScriptBank(lib, yangi)}`;
+    <button class="rp-link-btn rp-bridge-more" data-action="open-add-post">Qo'lda kontent qo'shish</button>`;
 }
 
-// Matn zaxirasi - eng ko'p qaraladigan raqam, shuning uchun alohida blokda.
-function renderScriptBank(lib, yangi){
-  if (!lib) {
-    return `<div class="rp-bank rp-bank-empty">
-      <div class="rp-bank-text">Matn kutubxonasi bo'sh. Word yoki Sheets'dagi matnlaringizni bir marta qo'ying.</div>
-      <button class="rp-bank-btn" data-action="open-import-scripts">Matn qo'yish</button>
+// Eng muhim ikki raqam: qaysi sanagacha tayyor, va nechta matn navbatda.
+function renderReadyBar(todayKey){
+  const through = readyThrough(todayKey);
+  const days = through ? daysBetween(parseKey(todayKey), parseKey(through)) + 1 : 0;
+  const tone = days >= 7 ? 'ok' : (days >= 3 ? 'warn' : 'bad');
+  const st = contentStats(todayKey);
+  return `
+    <div class="rp-card rp-ready">
+      <div class="rp-ready-big rp-tone-${tone}">${through ? esc(fmtUz(parseKey(through))) + 'gacha tayyor' : 'Bugunga tayyor emas'}</div>
+      <div class="rp-ready-sub">${days ? days + ' kun uzluksiz' : 'Bugungi reels montaji tugamagan'}</div>
+      <div class="rp-ready-row">
+        <span><b>${st.counts.video}</b> video olindi</span>
+        <span><b>${st.counts.montaj}</b> montaj tayyor</span>
+      </div>
     </div>`;
-  }
+}
+
+// Matn zaxirasi: Sheet bilan bog'liq hamma narsa shu yerda.
+function renderScriptBank(yangi){
+  const linked = !!sheetCsvUrl(state.sheetUrl);
   const tone = yangi >= 30 ? 'ok' : (yangi >= 10 ? 'warn' : 'bad');
-  return `<div class="rp-bank">
-    <div class="rp-bank-nums">
-      <span class="rp-bank-big rp-tone-${tone}">${yangi}</span>
-      <span class="rp-bank-lbl">ta matn tayyor<br><i>jami ${lib} &middot; ${lib - yangi} ishlatilgan</i></span>
-    </div>
-    <button class="rp-bank-btn" data-action="open-pick"${yangi ? '' : ' disabled'}>Matn ber</button>
-  </div>`;
+  return `
+    <div class="rp-bank">
+      <div class="rp-bank-nums">
+        <span class="rp-bank-big rp-tone-${tone}">${yangi}</span>
+        <span class="rp-bank-lbl">ta matn navbatda<br><i>${linked ? 'jadval ulangan' : 'jadval ulanmagan'}</i></span>
+      </div>
+      <div class="rp-bank-acts">
+        ${linked
+          ? `<button class="rp-bank-btn" data-action="sheet-sync"${state.sheetBusy ? ' disabled' : ''}>${state.sheetBusy ? '...' : 'Yangilash'}</button>`
+          : `<button class="rp-bank-btn" data-action="open-sheet">Jadvalni ulash</button>`}
+        ${yangi ? `<button class="rp-bank-btn rp-bank-btn2" data-action="open-split">Kunlarga bo'l</button>` : ''}
+      </div>
+      ${state.sheetMsg ? `<div class="rp-bank-msg${state.sheetMsg.bad ? ' rp-bank-msg-bad' : ''}">${esc(state.sheetMsg.text)}</div>` : ''}
+      ${linked ? `<button class="rp-link-btn rp-bank-link" data-action="open-sheet">Jadval sozlamasi</button>` : ''}
+    </div>`;
+}
+
+function renderSheetModal(){
+  return `
+    <div class="rp-modal-overlay" data-action="close-sheet">
+      <div class="rp-modal rp-modal-tall" data-action="noop">
+        <div class="rp-modal-header"><span>Matnlar jadvali</span><button class="rp-icon-btn" data-action="close-sheet">&#10005;</button></div>
+        <p class="rp-note">Ilova jadvalni o'zi o'qishi uchun u <b>vebda nashr qilingan</b> bo'lishi kerak:<br>
+          Sheets → <b>Fayl</b> → <b>Ulashish</b> → <b>Vebda nashr qilish</b> → <b>Nashr qilish</b>.<br>
+          Chiqqan havolani shu yerga qo'ying.</p>
+        <input class="rp-cloud-input" id="f-sheet-url" data-draft="sheeturl" placeholder="https://docs.google.com/spreadsheets/..." value="${esc(state.sheetUrl)}" />
+        ${state.sheetMsg ? `<div class="${state.sheetMsg.bad ? 'rp-cloud-err' : 'rp-cloud-ok'}">${esc(state.sheetMsg.text)}</div>` : ''}
+        <button class="rp-save-btn" data-action="sheet-save"${state.sheetBusy ? ' disabled' : ''}>${state.sheetBusy ? 'Ulanmoqda...' : 'Saqlash va o\'qish'}</button>
+        ${state.sheetUrl ? `<button class="rp-add-btn" data-action="sheet-clear">Jadvalni uzish</button>` : ''}
+        <p class="rp-note rp-note-small">Jadvalda birinchi ustun — matn, ikkinchisi (ixtiyoriy) — mavzu. Bitta qator = bitta matn.</p>
+      </div>
+    </div>`;
+}
+
+function renderSplitModal(){
+  const pool = unusedScripts().length;
+  const n = Math.max(0, Math.min(Number(state.splitCount) || 0, pool));
+  const dates = n ? nextFreeDates(n, new Date()) : [];
+  return `
+    <div class="rp-modal-overlay" data-action="close-split">
+      <div class="rp-modal rp-modal-tall" data-action="noop">
+        <div class="rp-modal-header"><span>Kunlarga bo'lish</span><button class="rp-icon-btn" data-action="close-split">&#10005;</button></div>
+        <p class="rp-note">Navbatdagi matnlardan kerakligini olib, bo'sh kunlarga bittadan taqsimlaydi. Band kunlar o'tkazib yuboriladi.</p>
+        <label class="rp-field"><span>Nechta matn (navbatda ${pool} ta)</span>
+          <input id="f-split" type="number" min="1" max="${pool}" data-draft="split" value="${esc(state.splitCount)}" placeholder="${Math.min(pool, 7)}" />
+        </label>
+        ${n ? `<div class="rp-import-box">
+            <div class="rp-import-row"><span>Birinchi kun</span><b>${esc(fmtUz(parseKey(dates[0])))}</b></div>
+            <div class="rp-import-row"><span>Oxirgi kun</span><b>${esc(fmtUz(parseKey(dates[dates.length - 1])))}</b></div>
+            <div class="rp-import-msg">${n} ta matn ${n} kunga taqsimlanadi.</div>
+          </div>` : ''}
+        <button class="rp-save-btn" data-action="do-split"${n ? '' : ' disabled'}>Taqsimlash</button>
+      </div>
+    </div>`;
 }
 
 function renderFunnel(st){
@@ -3278,6 +3452,25 @@ const handlers = {
     if (raw.trim()) prepareScriptImport(raw, state.importMode);
     else render();
   },
+  'open-sheet': () => { state.showSheet = true; state.sheetMsg = null; render(); },
+  'close-sheet': () => { state.showSheet = false; render(); },
+  'sheet-save': () => {
+    const el = document.getElementById('f-sheet-url');
+    state.sheetUrl = ((el && el.value) || '').trim();
+    commit();
+    fetchSheet(false).then(() => { if (state.sheetMsg && !state.sheetMsg.bad) state.showSheet = false; render(); });
+  },
+  'sheet-clear': () => { state.sheetUrl = ''; state.sheetMsg = null; commit(); render(); },
+  'sheet-sync': () => fetchSheet(false),
+
+  'open-split': () => { state.showSplit = true; state.splitCount = String(Math.min(unusedScripts().length, 7)); render(); },
+  'close-split': () => { state.showSplit = false; render(); },
+  'do-split': () => {
+    const n = splitIntoDays(state.splitCount);
+    state.showSplit = false; render();
+    toast(n ? n + ' ta matn kunlarga bo\'lindi' : 'Bo\'linmadi');
+  },
+
   'open-reel-import': () => { state.showReelImport = true; state.reelPreview = null; state.reelRaw = ''; render(); },
   'close-reel-import': () => { state.showReelImport = false; state.reelPreview = null; state.reelRaw = ''; render(); },
   'preview-reels': () => {
@@ -3387,6 +3580,8 @@ document.addEventListener('input', (e) => {
   else if (el.dataset && el.dataset.draft === 'plan') planDraft[el.dataset.field] = el.value;
   else if (el.dataset && el.dataset.draft === 'task') taskDraft[el.dataset.field] = el.value;
   else if (el.id === 'f-report-date') { state.reportDate = el.value; render(); }
+  else if (el.dataset && el.dataset.draft === 'sheeturl') { state.sheetUrl = el.value; }
+  else if (el.dataset && el.dataset.draft === 'split') { state.splitCount = el.value; render(); }
   else if (el.dataset && el.dataset.draft === 'libq') {
     // Qidiruvda render() maydonni qayta yaratadi va fokus yo'qoladi - shuning uchun
     // faqat ro'yxat qismini yangilaymiz.
