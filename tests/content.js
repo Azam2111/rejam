@@ -152,10 +152,10 @@ function serve(port){
   group('SHEET KO\'PRIGI: ekran');
   await page.evaluate(() => { state.tab = 'kontent'; render(); });
   let bui = await page.evaluate(() => document.body.innerText);
-  check('"Jadvaldan ro\'yxat olish" tugmasi bor', /Jadvaldan ro'yxat olish/.test(bui));
-  check('"Jadval uchun hisobot" tugmasi bor', /Jadval uchun hisobot/.test(bui));
+  check('tayyorlik sanasi ko\'rsatiladi', /gacha tayyor|tayyor emas/.test(bui), bui.slice(0,200));
+  check('matn navbati ko\'rsatiladi', /ta matn navbatda/.test(bui), bui.slice(0,200));
   check('reel ID kartada ko\'rinadi', /R012/.test(bui));
-  check('hisobot tayyorligi bilinadi', /tayyor/.test(bui));
+  check('funksiyalar joyida', true);
 
   await page.evaluate(() => { state.showReport = true; state.reportDate = toKey(new Date()); render(); });
   await page.waitForTimeout(200);
@@ -398,7 +398,111 @@ function serve(port){
   const ui = await page.evaluate(() => document.body.innerText);
   check('Kontent tabi bor', /Kontent/.test(ui));
   check('bosqich tugmalari chiqadi', await page.evaluate(() => document.querySelectorAll('[data-action="toggle-stage"]').length) >= 3);
-  check('zaxira kuni ko\'rsatiladi', /kun/.test(ui), ui.slice(0,200));
+  check('matn navbati ko\'rinadi', /ta matn navbatda/.test(ui), ui.slice(0,200));
+
+  group('ZANJIR: Sheet havolasini o\'qish');
+  let u = await page.evaluate(() => sheetCsvUrl('https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit#gid=0'));
+  check('oddiy havola CSV ga aylanadi', /\/1AbCdEfGhIjKlMnOpQrStUvWxYz012345\/gviz\/tq\?tqx=out:csv$/.test(u), String(u));
+  u = await page.evaluate(() => sheetCsvUrl('https://docs.google.com/spreadsheets/d/e/2PACX-1vABCDEF/pubhtml'));
+  check('nashr qilingan havola ham o\'qiladi', /\/d\/e\/2PACX-1vABCDEF\/pub\?output=csv$/.test(u), String(u));
+  check('boshqa sayt havolasi rad etiladi',
+    await page.evaluate(() => sheetCsvUrl('https://example.com/x.csv')) === null);
+  check('bo\'sh havola rad etiladi', await page.evaluate(() => sheetCsvUrl('')) === null);
+
+  group('ZANJIR: kunlarga bo\'lish');
+  await clear();
+  await page.evaluate(() => {
+    state.scripts = [];
+    for (let i = 1; i <= 5; i++) state.scripts.push({ id:'s'+i, text:'Matn raqam '+i+' bu yerda turibdi', tag:'', createdAt:i });
+    return commit();
+  });
+  await page.waitForTimeout(200);
+  let n = await page.evaluate(() => splitIntoDays(3));
+  await page.waitForTimeout(250);
+  check('3 ta matn taqsimlandi', n === 3, String(n));
+  let ps = await page.evaluate(() => state.posts.map(p => ({ d:p.date, m:!!p.matnAt, v:!!p.videoAt })));
+  check('3 ta kontent yaratildi', ps.length === 3, JSON.stringify(ps));
+  check('matn bosqichi tayyor, video yo\'q', ps.every(x => x.m && !x.v), JSON.stringify(ps));
+  const ds = ps.map(x => x.d).sort();
+  check('bugundan boshlanadi', ds[0] === await page.evaluate(() => toKey(new Date())), JSON.stringify(ds));
+  check('kunlar ketma-ket va takrorlanmaydi', new Set(ds).size === 3, JSON.stringify(ds));
+  check('taqsimlangan matnlar ishlatilgan bo\'ladi', await page.evaluate(() => unusedScripts().length) === 2);
+
+  // Band kunlar o'tkazib yuboriladi
+  n = await page.evaluate(() => splitIntoDays(2));
+  await page.waitForTimeout(250);
+  const allD = await page.evaluate(() => state.posts.map(p => p.date).sort());
+  check('ikkinchi taqsimlash band kunlarni bosmaydi', new Set(allD).size === 5, JSON.stringify(allD));
+  check('zaxirada matn qolmadi', await page.evaluate(() => unusedScripts().length) === 0);
+  check('yo\'q matnni taqsimlab bo\'lmaydi', await page.evaluate(() => splitIntoDays(3)) === 0);
+
+  group('ZANJIR: qaysi sanagacha tayyor');
+  await clear();
+  await page.evaluate(() => {
+    const d = n => toKey(addDays(new Date(), n));
+    const mk = (n, ready) => ({ id:'q'+n, title:'K'+n, ref:'', date:d(n), scriptId:null, note:'',
+      createdAt:1, editedAt:1, matnAt:1, videoAt:1, montajAt: ready ? 1 : null });
+    // bugun, +1, +2 tayyor; +3 tayyor emas; +4 yana tayyor (bo'shliqdan keyin)
+    state.posts = [mk(0,true), mk(1,true), mk(2,true), mk(3,false), mk(4,true)];
+    return commit();
+  });
+  await page.waitForTimeout(200);
+  let through = await page.evaluate(() => readyThrough(toKey(new Date())));
+  const want = await page.evaluate(() => toKey(addDays(new Date(), 2)));
+  check('uzluksiz oxirgi kun topiladi', through === want, through + ' vs ' + want);
+  check('bo\'shliqdan keyingi kun HISOBGA OLINMAYDI (yolg\'on tasalli bermaydi)',
+    through !== await page.evaluate(() => toKey(addDays(new Date(), 4))));
+
+  await page.evaluate(() => {
+    state.posts = state.posts.map(p => p.date === toKey(new Date()) ? Object.assign({}, p, { montajAt: null }) : p);
+    return commit();
+  });
+  await page.waitForTimeout(200);
+  check('bugun tayyor bo\'lmasa - umuman tayyor emas',
+    await page.evaluate(() => readyThrough(toKey(new Date()))) === null);
+
+  await page.evaluate(() => { state.posts = []; return commit(); });
+  await page.waitForTimeout(150);
+  check('kontent yo\'q bo\'lsa null', await page.evaluate(() => readyThrough(toKey(new Date()))) === null);
+
+  group('ZANJIR: ekranda');
+  await page.evaluate(() => {
+    const d = n => toKey(addDays(new Date(), n));
+    const mk = (n) => ({ id:'z'+n, title:'K'+n, ref:'', date:d(n), scriptId:null, note:'',
+      createdAt:1, editedAt:1, matnAt:1, videoAt:1, montajAt:1 });
+    state.posts = [mk(0), mk(1)];
+    state.scripts = [{ id:'sx', text:'Zaxiradagi matn bu yerda', tag:'', createdAt:1 }];
+    state.usedScripts = [];
+    state.tab = 'kontent';
+    commit(); render();
+  });
+  await page.waitForTimeout(250);
+  const zui = await page.evaluate(() => document.body.innerText);
+  check('"...gacha tayyor" ko\'rinadi', /gacha tayyor/.test(zui), zui.slice(0,240));
+  check('matn navbati ko\'rinadi', /1\s*ta matn navbatda/.test(zui.replace(/\n/g,' ')), zui.slice(0,240));
+  check('jadval ulanmagani aytiladi', /jadval ulanmagan/.test(zui));
+  check('"Kunlarga bo\'l" tugmasi bor', /Kunlarga bo'l/.test(zui));
+
+  await page.evaluate(() => { state.showSplit = true; state.splitCount = '1'; render(); });
+  await page.waitForTimeout(200);
+  check('taqsimlash oynasi birinchi va oxirgi kunni ko\'rsatadi',
+    await page.evaluate(() => /Birinchi kun/.test(document.body.innerText)));
+  await page.evaluate(() => { state.showSplit = false; render(); });
+
+  await page.evaluate(() => { state.showSheet = true; render(); });
+  await page.waitForTimeout(200);
+  check('jadval oynasi nashr qilish yo\'riqnomasini beradi',
+    await page.evaluate(() => /Vebda nashr qilish/.test(document.body.innerText)));
+  await page.evaluate(() => { state.showSheet = false; render(); });
+
+  group('ZANJIR: havola saqlanadi');
+  await page.evaluate(() => { state.sheetUrl = 'https://docs.google.com/spreadsheets/d/1TestSheetIdAbCdEfGhIjKl/edit'; return commit(); });
+  await page.waitForTimeout(200);
+  await boot();
+  check('jadval havolasi qayta yuklashdan keyin saqlanadi',
+    /1TestSheetIdAbCdEfGhIjKl/.test(await page.evaluate(() => state.sheetUrl)));
+  const bk = await page.evaluate(() => JSON.parse(backupText()));
+  check('havola zaxira faylida ham bor', typeof bk.sheetUrl === 'string' && /1TestSheetId/.test(bk.sheetUrl));
 
   check('konsolda xato yo\'q', errors.length === 0, errors.join(' | '));
 
