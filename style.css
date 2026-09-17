@@ -457,6 +457,8 @@ body {
 .rp-bank { display:block; margin-top:12px; }
 .rp-bank-nums { display:flex; align-items:baseline; gap:8px; }
 .rp-bank-acts { display:flex; gap:8px; margin-top:11px; }
+.rp-bank-plan { margin-top:8px; color:#8A7259; font-size:12.5px; line-height:1.45; }
+.rp-script-input { min-height:220px; resize:vertical; }
 .rp-bank-acts .rp-bank-btn { flex:1; }
 .rp-bank-btn2 { background:#FFFCF6; color:#3A2A1C; border:1px solid #DCCBA9; }
 .rp-bank-msg { font-size:12.5px; color:#4A6B3C; background:#EAF1E4; border-radius:9px; padding:8px 10px; margin-top:10px; line-height:1.4; }

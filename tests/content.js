@@ -153,7 +153,7 @@ function serve(port){
   await page.evaluate(() => { state.tab = 'kontent'; render(); });
   let bui = await page.evaluate(() => document.body.innerText);
   check('tayyorlik sanasi ko\'rsatiladi', /gacha tayyor|tayyor emas/.test(bui), bui.slice(0,200));
-  check('matn navbati ko\'rsatiladi', /ta matn navbatda/.test(bui), bui.slice(0,200));
+  check('matn zaxirasi ko\'rsatiladi', /ta matn zaxirada/.test(bui), bui.slice(0,200));
   check('reel ID kartada ko\'rinadi', /R012/.test(bui));
   check('funksiyalar joyida', true);
 
@@ -479,7 +479,7 @@ function serve(port){
   await page.waitForTimeout(250);
   const zui = await page.evaluate(() => document.body.innerText);
   check('"...gacha tayyor" ko\'rinadi', /gacha tayyor/.test(zui), zui.slice(0,240));
-  check('matn navbati ko\'rinadi', /1\s*ta matn navbatda/.test(zui.replace(/\n/g,' ')), zui.slice(0,240));
+  check('matn zaxirasi ko\'rinadi', /1\s*ta matn zaxirada/.test(zui.replace(/\n/g,' ')), zui.slice(0,240));
   check('jadval ulanmagani aytiladi', /jadval ulanmagan/.test(zui));
   check('"Kunlarga bo\'l" tugmasi bor', /Kunlarga bo'l/.test(zui));
 
@@ -503,6 +503,44 @@ function serve(port){
     /1TestSheetIdAbCdEfGhIjKl/.test(await page.evaluate(() => state.sheetUrl)));
   const bk = await page.evaluate(() => JSON.parse(backupText()));
   check('havola zaxira faylida ham bor', typeof bk.sheetUrl === 'string' && /1TestSheetId/.test(bk.sheetUrl));
+
+  group('APP-FIRST MATN ZAXIRASI');
+  r = await page.evaluate(() => scriptsFromTable(parseTable(
+    'ID\tMavzu\tHook\tMatn\tStatus\n1\tArab tili\tBu juda uzun hook bo\'lishi mumkin, ammo matn emas\tAynan shu to\'liq Reels matni olinishi kerak\tDraft')).items);
+  check('aniq Matn sarlavhasi uzun Hookdan ustun', r.length === 1 && /Aynan shu/.test(r[0].text) && r[0].tag === 'Arab tili', JSON.stringify(r));
+
+  await page.evaluate(async () => {
+    state.scripts = []; state.usedScripts = [];
+    addAppScript('  Bir xil   REELS matni ');
+    const savedFetch = window.fetch;
+    window.fetch = async () => ({ ok:true, text: async () => 'Matn\n bir xil reels MATNI  ' });
+    state.sheetUrl = 'https://docs.google.com/spreadsheets/d/1TestSheetIdAbCdEfGhIjKl/edit';
+    await fetchSheet(true);
+    window.fetch = savedFetch;
+  });
+  check('app va Sheetdagi bir xil matn faqat bir marta qoladi', await page.evaluate(() => state.scripts.length) === 1);
+  check('app nusxasi ustun qoladi', await page.evaluate(() => state.scripts[0].source) === 'app');
+
+  await page.evaluate(async () => {
+    state.scripts = [
+      { id:scriptKey('App qoladi'), text:'App qoladi', tag:'', source:'app', createdAt:1 },
+      { id:scriptKey('Sheet ketadi'), text:'Sheet ketadi', tag:'', source:'sheet', createdAt:1 },
+    ];
+    const savedFetch = window.fetch;
+    window.fetch = async () => ({ ok:true, text: async () => 'Matn\nBoshqa sheet matni' });
+    await fetchSheet(true); window.fetch = savedFetch;
+  });
+  check('Sheetdan o\'chgan source:sheet zaxiradan chiqadi', await page.evaluate(() => !state.scripts.some(s => s.text === 'Sheet ketadi')));
+  check('Sheetdan o\'chsa ham source:app qoladi', await page.evaluate(() => state.scripts.some(s => s.text === 'App qoladi')));
+
+  // reserveStart real state bilan ishlaydi; aniq 5-oktabr rejasini qo'yib qayta tekshiramiz.
+  const reserveWithPlan = await page.evaluate(() => {
+    state.posts = [{ id:'oct5', title:'Reel', date:'2026-10-05', scriptId:null, matnAt:1, videoAt:null, montajAt:null }];
+    return scriptReservePlan('2026-10-01', 20, 1);
+  });
+  check('5-oktabrgacha reja, 20 zaxira: 6–25 oktabr', reserveWithPlan.start === '2026-10-06' && reserveWithPlan.end === '2026-10-25', JSON.stringify(reserveWithPlan));
+  const reserveTwo = await page.evaluate(() => scriptReservePlan('2026-10-01', 20, 2));
+  check('kuniga 2 ta bo\'lsa sana to\'g\'ri qisqaradi', reserveTwo.start === '2026-10-06' && reserveTwo.end === '2026-10-15', JSON.stringify(reserveTwo));
 
   check('konsolda xato yo\'q', errors.length === 0, errors.join(' | '));
 
