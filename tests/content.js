@@ -565,6 +565,16 @@ function serve(port){
   check('boshlanish sozlanmasa birinchi tayyor video sanasidan olinadi', inferredStart === '2026-10-01', inferredStart);
 
   await clear();
+  const batchReady = await page.evaluate(() => {
+    state.posts = [{ id:'already', title:'Bor', date:'2026-10-05', scriptId:null, matnAt:1, videoAt:1, montajAt:null }];
+    const parsed = parseReadyDates('01.10.2026, 2026-10-05\n10/10/2026');
+    const result = addReadyDays('01.10.2026, 2026-10-05\n10/10/2026');
+    return { parsed, result, posts: state.posts.map(p => ({ d:p.date, v:!!p.videoAt })).sort((a,b) => a.d.localeCompare(b.d)) };
+  });
+  check('tayyor kunlar bir oynada turli sana shaklida olinadi', JSON.stringify(batchReady.parsed) === JSON.stringify(['2026-10-01','2026-10-05','2026-10-10']), JSON.stringify(batchReady));
+  check('tayyor kun takrorlanmaydi va video holatida saqlanadi', batchReady.result.added === 2 && batchReady.result.skipped === 1 && batchReady.posts.every(p => p.v), JSON.stringify(batchReady));
+
+  await clear();
   const manualDate = await page.evaluate(() => {
     state.scripts = [{ id:'choose', text:'Istalgan sanaga qo\'yiladigan matn', tag:'', source:'app', createdAt:1 }];
     const ok = scheduleScriptToDate('choose', '2026-11-05');

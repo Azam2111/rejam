@@ -440,6 +440,8 @@ let state = {
   showQuickAdd: false,
   appScriptDraft: '',
   showAddPost: false,
+  showReadyDays: false,
+  readyDaysDraft: '',
   showScheduleScript: false,
   schedulingScriptId: null,
   editingPostId: null,
@@ -1856,6 +1858,7 @@ function render(){
     ${state.showQuickAdd ? renderQuickAddModal() : ''}
     ${state.showAddScript ? renderAddScriptModal() : ''}
     ${state.showAddPost ? renderAddPostModal(today) : ''}
+    ${state.showReadyDays ? renderReadyDaysModal() : ''}
     ${state.showScheduleScript ? renderScheduleScriptModal(today) : ''}
     ${state.showLibrary ? renderLibraryModal() : ''}
     ${state.showImportScripts ? renderImportScriptsModal() : ''}
@@ -2728,7 +2731,10 @@ function renderContentTab(today){
     ${past.length ? `
       <button class="rp-link-btn rp-past-toggle" data-action="toggle-past">${state.showPastPosts ? "O'tganlarni yashirish" : `O'tgan kunlar (${past.length})`}</button>
       ${state.showPastPosts ? `<div class="rp-list rp-list-past">${past.map(p => renderPostCard(p, todayKey)).join('')}</div>` : ''}` : ''}
-    <button class="rp-link-btn rp-bridge-more" data-action="open-add-post">Tayyor video yoki kontent qo'shish</button>`;
+    <div class="rp-content-actions">
+      <button class="rp-add-btn" data-action="open-ready-days">Tayyor kunlarni belgilash</button>
+      <button class="rp-add-btn" data-action="open-add-post">Bitta video qo'shish</button>
+    </div>`;
 }
 
 // Eng muhim ikki raqam: qaysi sanagacha tayyor, va nechta matn navbatda.
@@ -2925,6 +2931,46 @@ function renderAddPostModal(today){
         <p class="rp-note rp-note-small">Tayyor video uchun nom va sanani kiriting. Shu sana keyingi avtomatik taqsimlashda band deb olinadi.</p>
       </div>
     </div>`;
+}
+
+function parseReadyDates(raw){
+  const found = new Set();
+  const chunks = String(raw || '').split(/[\s,;]+/).filter(Boolean);
+  for (const part of chunks) {
+    let m = part.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+    let key = m ? `${m[1]}-${pad(m[2])}-${pad(m[3])}` : '';
+    if (!key) {
+      m = part.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+      if (m) key = `${m[3]}-${pad(m[2])}-${pad(m[1])}`;
+    }
+    if (isValidDateKey(key)) found.add(key);
+  }
+  return Array.from(found).sort();
+}
+
+function addReadyDays(raw){
+  const dates = parseReadyDates(raw);
+  const busy = busyDates();
+  const fresh = dates.filter(d => !busy.has(d));
+  if (!fresh.length) return { added:0, skipped:dates.length, invalid:!dates.length };
+  const now = Date.now();
+  const add = fresh.map(date => ({
+    id: uid(), title:'Tayyor video', ref:'', date, scriptId:null, note:'', createdAt:now, editedAt:now,
+    matnAt:now, videoAt:now, montajAt:null,
+  }));
+  state.posts = state.posts.concat(add);
+  commit();
+  return { added:add.length, skipped:dates.length - add.length, invalid:false };
+}
+
+function renderReadyDaysModal(){
+  return `<div class="rp-modal-overlay" data-action="close-ready-days"><div class="rp-modal rp-modal-tall" data-action="noop">
+    <div class="rp-modal-header"><span>Tayyor kunlarni belgilash</span><button class="rp-icon-btn" data-action="close-ready-days">&#10005;</button></div>
+    <p class="rp-note">Tayyor videolaringizning sanalarini bir qatorga bittadan yozing yoki vergul bilan ajrating. Ular Video tayyor deb belgilanadi va avto-taqsimlash bu kunlarni chetlab o'tadi.</p>
+    <textarea id="f-ready-days" class="rp-idea-input" rows="7" placeholder="01.10.2026&#10;05.10.2026&#10;10.10.2026">${esc(state.readyDaysDraft)}</textarea>
+    <p class="rp-note rp-note-small">Sana shakli: 01.10.2026 yoki 2026-10-01. Oldindan rejalangan sana qaytadan qo'shilmaydi.</p>
+    <button class="rp-save-btn" data-action="save-ready-days">Tayyor kunlarni saqlash</button>
+  </div></div>`;
 }
 
 function renderScheduleScriptModal(today){
@@ -3720,6 +3766,16 @@ const handlers = {
     addPost(title, (d && d.value) || null, null, video && video.checked ? 'video' : null);
     state.showAddPost = false;
     render();
+  },
+  'open-ready-days': () => { state.readyDaysDraft = ''; state.showReadyDays = true; render(); },
+  'close-ready-days': () => { state.showReadyDays = false; state.readyDaysDraft = ''; render(); },
+  'save-ready-days': () => {
+    const area = document.getElementById('f-ready-days');
+    state.readyDaysDraft = (area && area.value) || state.readyDaysDraft;
+    const result = addReadyDays(state.readyDaysDraft);
+    if (result.invalid) { toast('To\'g\'ri sana topilmadi'); return; }
+    state.showReadyDays = false; state.readyDaysDraft = ''; render();
+    toast(result.added + ' ta tayyor kun belgilandi' + (result.skipped ? '; ' + result.skipped + ' tasi avvaldan bor' : ''));
   },
   'toggle-stage': (btn) => togglePostStage(btn.dataset.id, btn.dataset.stage),
   'delete-post': (btn) => deletePost(btn.dataset.id),
