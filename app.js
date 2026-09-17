@@ -440,6 +440,8 @@ let state = {
   showQuickAdd: false,
   appScriptDraft: '',
   showAddPost: false,
+  showScheduleScript: false,
+  schedulingScriptId: null,
   editingPostId: null,
   libQuery: '',
   libFilter: 'yangi',        // yangi | hammasi | ishlatilgan
@@ -1854,6 +1856,7 @@ function render(){
     ${state.showQuickAdd ? renderQuickAddModal() : ''}
     ${state.showAddScript ? renderAddScriptModal() : ''}
     ${state.showAddPost ? renderAddPostModal(today) : ''}
+    ${state.showScheduleScript ? renderScheduleScriptModal(today) : ''}
     ${state.showLibrary ? renderLibraryModal() : ''}
     ${state.showImportScripts ? renderImportScriptsModal() : ''}
     ${state.showPick ? renderPickModal() : ''}
@@ -2221,7 +2224,7 @@ function togglePostStage(postId, stageId){
   render();
 }
 
-function addPost(title, date, scriptId){
+function addPost(title, date, scriptId, readyStage){
   const t = String(title || '').trim();
   if (!t) return null;
   const now = Date.now();
@@ -2229,6 +2232,8 @@ function addPost(title, date, scriptId){
               scriptId: scriptId || null, note: '', createdAt: now, editedAt: now };
   for (const k of STAGE_KEYS) p[k] = null;
   if (scriptId) p.matnAt = now;              // matn tayyor - kutubxonadan olindi
+  const readyIdx = CONTENT_STAGES.findIndex(s => s.id === readyStage);
+  if (readyIdx >= 0) for (let i = 0; i <= readyIdx; i++) p[STAGE_KEYS[i]] = now;
   state.posts = state.posts.concat([p]);
   if (scriptId) markScriptUsed(scriptId, true);
   commit();
@@ -2504,6 +2509,14 @@ function reserveStart(todayKey){
     : { date: isValidDateKey(state.contentStartDate) ? state.contentStartDate : todayKey, locked: false, last: null };
 }
 
+// Avto-taqsimlash zaxira hisobidan boshqa qoida bilan yuradi: foydalanuvchi
+// belgilagan startdan boshlaydi va faqat band SANALARNI tashlab o'tadi.
+// Masalan, 5-oktabr band bo'lsa, 2–4 va 6-oktabrlar to'ldiriladi.
+function splitStart(todayKey){
+  const configured = isValidDateKey(state.contentStartDate) ? state.contentStartDate : todayKey;
+  return configured > todayKey ? configured : todayKey;
+}
+
 function scriptReservePlan(todayKey, count, perDay){
   const n = Math.max(0, Number(count) || 0);
   const daily = Math.max(1, Math.min(10, Math.floor(Number(perDay) || 1)));
@@ -2534,8 +2547,8 @@ function splitIntoDays(count){
   const pool = unusedScripts();
   const n = Math.max(0, Math.min(Number(count) || 0, pool.length));
   if (!n) return 0;
-  const plan = scriptReservePlan(toKey(new Date()), n, state.contentPerDay);
-  const dates = nextFreeDates(n, parseKey(plan.start), plan.perDay);
+  const todayKey = toKey(new Date());
+  const dates = nextFreeDates(n, parseKey(splitStart(todayKey)), state.contentPerDay);
   const now = Date.now();
   const add = [];
   for (let i = 0; i < n; i++) {
@@ -2650,6 +2663,37 @@ function scriptToPost(id){
   toast('Kontent qo\'shildi — matn tayyor');
 }
 
+function scheduleScriptToDate(id, date){
+  const sc = state.scripts.find(x => x.id === id);
+  if (!sc || !isValidDateKey(date)) return false;
+  addPost(sc.text.replace(/\s+/g, ' ').trim().slice(0, 70), date, id);
+  state.showScheduleScript = false;
+  state.schedulingScriptId = null;
+  state.showLibrary = false;
+  render();
+  toast(fmtUz(parseKey(date)) + 'ga qo\'yildi');
+  return true;
+}
+
+function copyScriptText(id){
+  const sc = state.scripts.find(x => x.id === id);
+  if (!sc) return;
+  const done = () => toast('Matn nusxa olindi');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(sc.text).then(done).catch(() => fallbackCopy(sc.text, done));
+  } else fallbackCopy(sc.text, done);
+}
+
+function fallbackCopy(text, done){
+  const area = document.createElement('textarea');
+  area.value = text; area.setAttribute('readonly', '');
+  area.style.cssText = 'position:fixed;opacity:0;pointer-events:none';
+  document.body.appendChild(area); area.select();
+  try { document.execCommand('copy'); done(); }
+  catch (e) { toast('Nusxa olib bo\'lmadi — matnni bosib ushlab belgilang'); }
+  document.body.removeChild(area);
+}
+
 function renderContentTab(today){
   const todayKey = toKey(today);
   const st = contentStats(todayKey);
@@ -2672,14 +2716,15 @@ function renderContentTab(today){
   return `
     ${renderReadyBar(todayKey)}
     ${renderScriptBank(yangi)}
+    <div class="rp-schedule-guide"><b>Avval tayyor videolarni sanaga qo'ying.</b> Keyin &laquo;Kunlarga bo'l&raquo; matnlarni faqat bo'sh kunlarga joylaydi.</div>
     ${bosh}
     ${sec('Bugun', bugun)}
-    ${sec('Keyingi kunlar', keyin)}
+    ${renderFuturePosts(keyin, todayKey)}
     ${sec('Kunga biriktirilmagan', zaxira)}
     ${past.length ? `
       <button class="rp-link-btn rp-past-toggle" data-action="toggle-past">${state.showPastPosts ? "O'tganlarni yashirish" : `O'tgan kunlar (${past.length})`}</button>
       ${state.showPastPosts ? `<div class="rp-list rp-list-past">${past.map(p => renderPostCard(p, todayKey)).join('')}</div>` : ''}` : ''}
-    <button class="rp-link-btn rp-bridge-more" data-action="open-add-post">Qo'lda kontent qo'shish</button>`;
+    <button class="rp-link-btn rp-bridge-more" data-action="open-add-post">Tayyor video yoki kontent qo'shish</button>`;
 }
 
 // Eng muhim ikki raqam: qaysi sanagacha tayyor, va nechta matn navbatda.
@@ -2754,23 +2799,42 @@ function renderSplitModal(){
   const pool = unusedScripts().length;
   const n = Math.max(0, Math.min(Number(state.splitCount) || 0, pool));
   const plan = scriptReservePlan(toKey(new Date()), n, state.contentPerDay);
-  const dates = n ? nextFreeDates(n, parseKey(plan.start), plan.perDay) : [];
+  const splitFrom = splitStart(toKey(new Date()));
+  const dates = n ? nextFreeDates(n, parseKey(splitFrom), plan.perDay) : [];
   return `
     <div class="rp-modal-overlay" data-action="close-split">
       <div class="rp-modal rp-modal-tall" data-action="noop">
         <div class="rp-modal-header"><span>Kunlarga bo'lish</span><button class="rp-icon-btn" data-action="close-split">&#10005;</button></div>
-        <p class="rp-note">Ishlatilmagan matnlarni bo'sh kunlarga taqsimlaydi. Band kunlar o'tkazib yuboriladi; kuniga ${plan.perDay} tadan.</p>
+        <p class="rp-note">${esc(fmtUz(parseKey(splitFrom)))}dan boshlab ishlatilmagan matnlarni bo'sh kunlarga taqsimlaydi. Siz qo'ygan tayyor video kunlari o'tkazib yuboriladi; kuniga ${plan.perDay} tadan.</p>
         <label class="rp-field"><span>Nechta matn (navbatda ${pool} ta)</span>
           <input id="f-split" type="number" min="1" max="${pool}" data-draft="split" value="${esc(state.splitCount)}" placeholder="${Math.min(pool, 7)}" />
         </label>
         ${n ? `<div class="rp-import-box">
             <div class="rp-import-row"><span>Birinchi kun</span><b>${esc(fmtUz(parseKey(dates[0])))}</b></div>
             <div class="rp-import-row"><span>Oxirgi kun</span><b>${esc(fmtUz(parseKey(dates[dates.length - 1])))}</b></div>
-            <div class="rp-import-msg">${n} ta matn ${n} kunga taqsimlanadi.</div>
+            <div class="rp-import-msg">${n} ta matn band kunlarni bosmasdan taqsimlanadi.</div>
           </div>` : ''}
         <button class="rp-save-btn" data-action="do-split"${n ? '' : ' disabled'}>Taqsimlash</button>
       </div>
     </div>`;
+}
+
+function renderFuturePosts(posts, todayKey){
+  if (!posts.length) return '';
+  const months = new Map();
+  for (const p of posts) {
+    const key = p.date.slice(0, 7);
+    if (!months.has(key)) months.set(key, []);
+    months.get(key).push(p);
+  }
+  return `<div class="rp-sec-label rp-future-label">Keyingi kunlar</div>
+    ${Array.from(months.entries()).map(([key, list]) => {
+      const d = parseKey(key + '-01');
+      return `<section class="rp-month-block">
+        <div class="rp-month-title">${esc(MONTHS_UZ[d.getMonth()])} <span>${d.getFullYear()}</span><i>${list.length}</i></div>
+        <div class="rp-list">${list.map(p => renderPostCard(p, todayKey)).join('')}</div>
+      </section>`;
+    }).join('')}`;
 }
 
 function renderContentSettingsModal(){
@@ -2850,12 +2914,26 @@ function renderAddPostModal(today){
           <input id="f-post-title" placeholder="Masalan: 3 ta arabcha so'z" maxlength="300" />
         </label>
         <label class="rp-field"><span>Qaysi kunga (ixtiyoriy)</span>
-          <input id="f-post-date" type="date" value="" />
+          <input id="f-post-date" type="date" value="${esc(splitStart(toKey(today)))}" />
         </label>
+        <label class="rp-check-row"><input id="f-post-video-ready" type="checkbox" /> <span>Video tayyor <i>— Matn ham tayyor deb belgilanadi</i></span></label>
         <button class="rp-save-btn" data-action="save-post">Qo'shish</button>
-        <p class="rp-note rp-note-small">Sanani bo'sh qoldirsangiz zaxiraga tushadi.</p>
+        <p class="rp-note rp-note-small">Tayyor video uchun nom va sanani kiriting. Shu sana keyingi avtomatik taqsimlashda band deb olinadi.</p>
       </div>
     </div>`;
+}
+
+function renderScheduleScriptModal(today){
+  const sc = state.scripts.find(x => x.id === state.schedulingScriptId);
+  if (!sc) return '';
+  const suggested = splitStart(toKey(today));
+  return `<div class="rp-modal-overlay" data-action="close-schedule-script"><div class="rp-modal" data-action="noop">
+    <div class="rp-modal-header"><span>Matnni kunga qo'yish</span><button class="rp-icon-btn" data-action="close-schedule-script">&#10005;</button></div>
+    <div class="rp-script-preview">${esc(sc.text.slice(0, 500))}${sc.text.length > 500 ? '&hellip;' : ''}</div>
+    <label class="rp-field"><span>Sana</span><input id="f-script-date" type="date" value="${esc(suggested)}" /></label>
+    <p class="rp-note rp-note-small">Bu sana band bo'lsa ham siz qo'lda qo'yishingiz mumkin. Avto-taqsimlash esa band kunlarni o'tkazib yuboradi.</p>
+    <button class="rp-save-btn" data-action="schedule-script" data-id="${esc(sc.id)}">Shu kunga qo'yish</button>
+  </div></div>`;
 }
 
 function renderLibraryModal(){
@@ -2883,6 +2961,8 @@ function renderLibraryModal(){
                 ${sc.tag ? `<div class="rp-lib-tag">${esc(sc.tag)}</div>` : ''}
                 <div class="rp-lib-text">${esc(sc.text.slice(0, 260))}${sc.text.length > 260 ? '&hellip;' : ''}</div>
                 <div class="rp-lib-acts">
+                  <button class="rp-link-btn" data-action="copy-script" data-id="${esc(sc.id)}">Nusxa olish</button>
+                  ${used ? '' : `<button class="rp-link-btn" data-action="schedule-script-open" data-id="${esc(sc.id)}">Kunga qo'yish</button>`}
                   <button class="rp-link-btn" data-action="script-to-post" data-id="${esc(sc.id)}">Kontent qilish</button>
                   <button class="rp-link-btn" data-action="toggle-used" data-id="${esc(sc.id)}">${used ? 'Ishlatilmagan deb belgilash' : 'Ishlatilgan deb belgilash'}</button>
                 </div>
@@ -3630,9 +3710,10 @@ const handlers = {
   'save-post': () => {
     const t = document.getElementById('f-post-title');
     const d = document.getElementById('f-post-date');
+    const video = document.getElementById('f-post-video-ready');
     const title = ((t && t.value) || '').trim();
     if (!title) { toast('Nom kiriting'); return; }
-    addPost(title, (d && d.value) || null, null);
+    addPost(title, (d && d.value) || null, null, video && video.checked ? 'video' : null);
     state.showAddPost = false;
     render();
   },
@@ -3644,6 +3725,13 @@ const handlers = {
   'close-library': () => { state.showLibrary = false; render(); },
   'lib-filter': (btn) => { state.libFilter = btn.dataset.f; render(); },
   'toggle-used': (btn) => { markScriptUsed(btn.dataset.id, !isScriptUsed(btn.dataset.id)); render(); },
+  'copy-script': (btn) => copyScriptText(btn.dataset.id),
+  'schedule-script-open': (btn) => { state.schedulingScriptId = btn.dataset.id; state.showScheduleScript = true; render(); },
+  'close-schedule-script': () => { state.showScheduleScript = false; state.schedulingScriptId = null; render(); },
+  'schedule-script': (btn) => {
+    const date = document.getElementById('f-script-date');
+    if (!scheduleScriptToDate(btn.dataset.id, date && date.value)) toast('To\'g\'ri sana tanlang');
+  },
   'script-to-post': (btn) => scriptToPost(btn.dataset.id),
 
   'open-import-scripts': () => { state.showImportScripts = true; state.scriptPreview = null; state.importRaw = ''; state.importMode = 'auto'; render(); },

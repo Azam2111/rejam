@@ -542,6 +542,38 @@ function serve(port){
   const reserveTwo = await page.evaluate(() => scriptReservePlan('2026-10-01', 20, 2));
   check('kuniga 2 ta bo\'lsa sana to\'g\'ri qisqaradi', reserveTwo.start === '2026-10-06' && reserveTwo.end === '2026-10-15', JSON.stringify(reserveTwo));
 
+  group('TAYYOR VIDEO VA BO\'SH KUNLAR');
+  await clear();
+  const gaps = await page.evaluate(() => {
+    state.contentStartDate = '2026-10-01'; state.contentPerDay = 1;
+    state.scripts = [1,2,3,4].map(n => ({ id:'gap'+n, text:'Bo\'sh kun matni '+n, tag:'', source:'app', createdAt:n }));
+    state.posts = [
+      { id:'oct1', title:'Tayyor 1', date:'2026-10-01', scriptId:null, matnAt:1, videoAt:1, montajAt:null },
+      { id:'oct5', title:'Tayyor 5', date:'2026-10-05', scriptId:null, matnAt:1, videoAt:1, montajAt:null },
+    ];
+    const preview = nextFreeDates(4, parseKey(splitStart('2026-09-17')), 1);
+    const made = splitIntoDays(4);
+    return { preview, made, dates: state.posts.filter(p => /^gap/.test(p.scriptId || '')).map(p => p.date).sort() };
+  });
+  check('avto-taqsimlash 5-oktabrni chetlab o\'tadi', JSON.stringify(gaps.preview) === JSON.stringify(['2026-10-02','2026-10-03','2026-10-04','2026-10-06']), JSON.stringify(gaps.preview));
+  check('bo\'sh kunlarga matnlar joylandi', gaps.made === 4 && JSON.stringify(gaps.dates) === JSON.stringify(['2026-10-02','2026-10-03','2026-10-04','2026-10-06']), JSON.stringify(gaps));
+
+  await clear();
+  const manualDate = await page.evaluate(() => {
+    state.scripts = [{ id:'choose', text:'Istalgan sanaga qo\'yiladigan matn', tag:'', source:'app', createdAt:1 }];
+    const ok = scheduleScriptToDate('choose', '2026-11-05');
+    return { ok, date: state.posts[0] && state.posts[0].date, used: isScriptUsed('choose') };
+  });
+  check('matn istalgan tanlangan kunga qo\'yiladi', manualDate.ok && manualDate.date === '2026-11-05' && manualDate.used, JSON.stringify(manualDate));
+  await page.evaluate(() => { state.tab = 'kontent'; state.showLibrary = true; render(); });
+  await page.waitForTimeout(120);
+  check('kutubxonada nusxa olish tugmasi bor', await page.evaluate(() => /Nusxa olish/.test(document.body.innerText)));
+  await page.evaluate(() => { state.showLibrary = false; state.posts = [
+    { id:'m1', title:'Oktyabr', date:'2026-10-01', scriptId:null, matnAt:1, videoAt:null, montajAt:null },
+    { id:'m2', title:'Noyabr', date:'2026-11-01', scriptId:null, matnAt:1, videoAt:null, montajAt:null },
+  ]; render(); });
+  check('kelajak rejalari oylar bo\'yicha ajraladi', await page.evaluate(() => /Oktyabr 2026/.test(document.body.innerText) && /Noyabr 2026/.test(document.body.innerText)));
+
   check('konsolda xato yo\'q', errors.length === 0, errors.join(' | '));
 
   console.log(out.join('\n'));
