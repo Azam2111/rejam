@@ -455,6 +455,7 @@ let state = {
   sheetUrl: '',
   sheetFetchedAt: 0,
   sheetBusy: false,
+  sheetWriteBusy: false,
   sheetMsg: null,
   showSheet: false,
   showSplit: false,
@@ -2373,7 +2374,58 @@ function sheetCsvUrl(raw){
   return null;
 }
 
+function sheetIdAndGid(raw){
+  const u = String(raw == null ? '' : raw).trim();
+  const m = u.match(/\/d\/([A-Za-z0-9_-]{20,})/);
+  if (!m) return null;
+  const gid = (u.match(/[?&#]gid=(\d+)/) || [])[1] || null;
+  return { id: m[1], gid };
+}
+
+async function googleSheetRows(){
+  const c = window.rejamCloud, ref = sheetIdAndGid(state.sheetUrl);
+  if (!c || !c.sheetsConnected || !ref) throw new Error('Google Sheets ulanmagan');
+  const base = 'https://sheets.googleapis.com/v4/spreadsheets/' + encodeURIComponent(ref.id);
+  const metaRes = await c.sheetsFetch(base + '?fields=sheets(properties(sheetId,title))');
+  if (!metaRes.ok) throw new Error('Jadval ochilmadi (' + metaRes.status + ')');
+  const meta = await metaRes.json(), sheets = meta.sheets || [];
+  const chosen = sheets.find(s => String(s.properties && s.properties.sheetId) === ref.gid) || sheets[0];
+  if (!chosen || !chosen.properties) throw new Error('Jadval varag\'i topilmadi');
+  const title = chosen.properties.title;
+  const range = "'" + title.replace(/'/g, "''") + "'!A1:ZZ10000";
+  const dataRes = await c.sheetsFetch(base + '/values/' + encodeURIComponent(range));
+  if (!dataRes.ok) throw new Error('Jadval qatorlari o\'qilmadi (' + dataRes.status + ')');
+  const data = await dataRes.json();
+  return { id: ref.id, range, rows: data.values || [] };
+}
+
+function mergeSheetScripts(items){
+  const have = new Set(state.scripts.map(x => scriptKey(x.text))), fromSheet = new Set(), fresh = [];
+  for (const f of items) {
+    const id = scriptKey(f.text); fromSheet.add(id);
+    if (have.has(id)) continue;
+    have.add(id); fresh.push({ id, text:f.text.slice(0, 8000), tag:f.tag.slice(0, 60), source:'sheet', createdAt:Date.now() });
+  }
+  const before = state.scripts.length;
+  state.scripts = state.scripts.filter(sc => sc.source !== 'sheet' || fromSheet.has(scriptKey(sc.text))).concat(fresh);
+  return { fresh, removed: before + fresh.length - state.scripts.length };
+}
+
 async function fetchSheet(silent){
+  const cloud = window.rejamCloud;
+  if (cloud && cloud.sheetsConnected && sheetIdAndGid(state.sheetUrl)) {
+    state.sheetBusy = true; state.sheetMsg = null; render();
+    try {
+      const api = await googleSheetRows();
+      const result = mergeSheetScripts(scriptsFromTable(api.rows).items);
+      state.sheetFetchedAt = Date.now(); commit();
+      state.sheetMsg = { bad:false, text: result.fresh.length || result.removed
+        ? (result.fresh.length ? result.fresh.length + ' ta yangi matn olindi' : 'Yangi matn yo\'q') + (result.removed ? ', ' + result.removed + ' ta eski Sheet matni chiqarildi' : '')
+        : 'Yangi matn yo\'q — hammasi allaqachon bor' };
+      if (!silent && result.fresh.length) toast(result.fresh.length + ' ta yangi matn');
+    } catch(e) { state.sheetMsg = { bad:true, text:(e && e.message) || 'Google Sheets o\'qilmadi' }; }
+    state.sheetBusy = false; render(); return;
+  }
   const url = sheetCsvUrl(state.sheetUrl);
   if (!url) { state.sheetMsg = { bad: true, text: "Havola noto'g'ri. Google Sheets havolasini qo'ying." }; render(); return; }
   state.sheetBusy = true; state.sheetMsg = null; render();
@@ -2392,19 +2444,8 @@ async function fetchSheet(silent){
     render(); return;
   }
   const parsed = scriptsFromTable(parseTable(text));
-  const have = new Set(state.scripts.map(x => scriptKey(x.text)));
-  const fromSheet = new Set();
-  const fresh = [];
-  for (const f of parsed.items) {
-    const id = scriptKey(f.text);
-    fromSheet.add(id);
-    if (have.has(id)) continue;
-    have.add(id);
-    fresh.push({ id, text: f.text.slice(0, 8000), tag: f.tag.slice(0, 60), source: 'sheet', createdAt: Date.now() });
-  }
-  const before = state.scripts.length;
-  state.scripts = state.scripts.filter(sc => sc.source !== 'sheet' || fromSheet.has(scriptKey(sc.text))).concat(fresh);
-  const removed = before + fresh.length - state.scripts.length;
+  const result = mergeSheetScripts(parsed.items);
+  const fresh = result.fresh, removed = result.removed;
   state.sheetFetchedAt = Date.now();
   state.sheetMsg = { bad: false, text: fresh.length || removed
     ? (fresh.length ? fresh.length + ' ta yangi matn olindi' : 'Yangi matn yo\'q') + (removed ? ', ' + removed + ' ta eski Sheet matni chiqarildi' : '')
@@ -2423,7 +2464,34 @@ function addAppScript(raw){
   }
   state.scripts = state.scripts.concat([{ id, text, tag: '', source: 'app', createdAt: Date.now() }]);
   commit();
+  if (window.rejamCloud && window.rejamCloud.sheetsConnected && state.sheetUrl) syncAppScriptsToSheet(true);
   return true;
+}
+
+async function syncAppScriptsToSheet(silent){
+  state.sheetWriteBusy = true; state.sheetMsg = null; render();
+  try {
+    const api = await googleSheetRows();
+    const headers = (api.rows[0] || []).map(x => String(x == null ? '' : x).trim().toLocaleLowerCase('uz'));
+    const textCol = headers.findIndex(h => ['matn','reels matni','draft matn','script'].includes(h));
+    const tagCol = headers.findIndex(h => ['mavzu','kategoriya','tag'].includes(h));
+    if (textCol < 0) throw new Error('Yozish uchun Sheetda Matn, Reels matni, Draft matn yoki Script sarlavhasi bo\'lsin');
+    const emptyKey = scriptKey('');
+    const existing = new Set(api.rows.slice(1).map(r => scriptKey(r[textCol] || '')).filter(k => k !== emptyKey));
+    const pending = state.scripts.filter(sc => !existing.has(scriptKey(sc.text)));
+    if (pending.length) {
+      const width = Math.max((api.rows[0] || []).length, textCol + 1, tagCol + 1);
+      const values = pending.map(sc => {
+        const row = Array(width).fill(''); row[textCol] = sc.text; if (tagCol >= 0) row[tagCol] = sc.tag || ''; return row;
+      });
+      const url = 'https://sheets.googleapis.com/v4/spreadsheets/' + encodeURIComponent(api.id) + '/values/' + encodeURIComponent(api.range) + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS';
+      const res = await window.rejamCloud.sheetsFetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({values}) });
+      if (!res.ok) throw new Error('Sheetga yozilmadi (' + res.status + ')');
+    }
+    state.sheetMsg = { bad:false, text: pending.length ? pending.length + ' ta app matni Sheetga yozildi' : 'Sheet va kutubxona bir xil' };
+    if (!silent && pending.length) toast(pending.length + ' ta matn Sheetga yozildi');
+  } catch(e) { state.sheetMsg = { bad:true, text:(e && e.message) || 'Sheetga yozilmadi' }; }
+  state.sheetWriteBusy = false; render();
 }
 
 // ---------- Kunlarga bo'lish ----------
@@ -2568,6 +2636,7 @@ function confirmScriptImport(){
   state.importMode = 'auto';
   state.showImportScripts = false;
   commit(); render();
+  if (window.rejamCloud && window.rejamCloud.sheetsConnected && state.sheetUrl) syncAppScriptsToSheet(true);
   toast(pv.fresh.length + ' ta matn qo\'shildi');
 }
 
@@ -2658,6 +2727,8 @@ function renderScriptBank(yangi){
 }
 
 function renderSheetModal(){
+  const cloud = window.rejamCloud;
+  const canWrite = !!(cloud && cloud.sheetsConnected && sheetIdAndGid(state.sheetUrl));
   return `
     <div class="rp-modal-overlay" data-action="close-sheet">
       <div class="rp-modal rp-modal-tall" data-action="noop">
@@ -2668,8 +2739,11 @@ function renderSheetModal(){
         <input class="rp-cloud-input" id="f-sheet-url" data-draft="sheeturl" placeholder="https://docs.google.com/spreadsheets/..." value="${esc(state.sheetUrl)}" />
         ${state.sheetMsg ? `<div class="${state.sheetMsg.bad ? 'rp-cloud-err' : 'rp-cloud-ok'}">${esc(state.sheetMsg.text)}</div>` : ''}
         <button class="rp-save-btn" data-action="sheet-save"${state.sheetBusy ? ' disabled' : ''}>${state.sheetBusy ? 'Ulanmoqda...' : 'Saqlash va o\'qish'}</button>
+        ${!canWrite
+          ? `<button class="rp-add-btn" data-action="sheet-connect-google">Google orqali yozishni ulash</button>`
+          : `<button class="rp-add-btn" data-action="sheet-push"${state.sheetWriteBusy ? ' disabled' : ''}>${state.sheetWriteBusy ? 'Yozilmoqda...' : 'Kutubxonani Sheetga yozish'}</button>`}
         ${state.sheetUrl ? `<button class="rp-add-btn" data-action="sheet-clear">Jadvalni uzish</button>` : ''}
-        <p class="rp-note rp-note-small">Jadvalda birinchi ustun — matn, ikkinchisi (ixtiyoriy) — mavzu. Bitta qator = bitta matn.</p>
+        <p class="rp-note rp-note-small">Google yozuvi uchun bu yerga Sheetning oddiy <b>/edit</b> havolasini qo'ying va Sheetda <b>Matn</b>, <b>Reels matni</b>, <b>Draft matn</b> yoki <b>Script</b> sarlavhali ustun bo'lishi shart. Token faqat shu brauzer sessiyasida saqlanadi.</p>
       </div>
     </div>`;
 }
@@ -3593,6 +3667,12 @@ const handlers = {
   },
   'sheet-clear': () => { state.sheetUrl = ''; state.sheetMsg = null; commit(); render(); },
   'sheet-sync': () => fetchSheet(false),
+  'sheet-connect-google': () => {
+    const c = window.rejamCloud;
+    if (!c || !c.connectSheets) { toast('Google ulanishi mavjud emas'); return; }
+    c.connectSheets().then(ok => { if (!ok) { state.sheetMsg = { bad:true, text:c.error || 'Google ulanmadi' }; render(); } });
+  },
+  'sheet-push': () => syncAppScriptsToSheet(false),
 
   'open-split': () => { state.showSplit = true; state.splitCount = String(Math.min(unusedScripts().length, 7)); render(); },
   'close-split': () => { state.showSplit = false; render(); },

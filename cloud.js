@@ -29,6 +29,11 @@
     signUp() { return Promise.resolve(false); },
     resetPassword() { return Promise.resolve(false); },
     signOut() { return Promise.resolve(); },
+    connectSheets() { return Promise.resolve(false); },
+    disconnectSheets() {},
+    sheetsFetch() { return Promise.reject(new Error('Google Sheets ulanmagan')); },
+    sheetsConnected: false,
+    sheetsEmail: null,
     notifyLocalChange() {},
     resume() { return Promise.resolve(); },
     onChange: null,
@@ -42,6 +47,7 @@
   let fs = null, authMod = null, auth = null, db = null;
   let sync = null;
   let sdkPromise = null;
+  let sheetsToken = null; // Faqat joriy sessiyada: backup/Firebase/localStoragega yozilmaydi.
 
   function emit() { if (typeof C.onChange === 'function') { try { C.onChange(); } catch (e) {} } }
   function setStatus(s) { C.status = s; emit(); }
@@ -161,6 +167,53 @@
     return ok;
   }
 
+  function rememberSheetsToken(result) {
+    const credential = result && authMod.GoogleAuthProvider.credentialFromResult(result);
+    if (!credential || !credential.accessToken) return false;
+    sheetsToken = credential.accessToken;
+    C.sheetsConnected = true;
+    C.sheetsEmail = (result.user && result.user.email) || (auth.currentUser && auth.currentUser.email) || null;
+    return true;
+  }
+
+  // Google sahifasidan qaytganda token shu yerda olinadi. Token muddati qisqa;
+  // uni doimiy xotiraga yozish xavfsiz ham, kerak ham emas.
+  async function finishSheetsRedirect() {
+    const result = await authMod.getRedirectResult(auth);
+    if (!rememberSheetsToken(result)) return false;
+    rememberUser(auth.currentUser);
+    emit();
+    return true;
+  }
+
+  C.connectSheets = async function () {
+    C.error = null;
+    try {
+      await loadSDK();
+      const provider = new authMod.GoogleAuthProvider();
+      provider.addScope('https://www.googleapis.com/auth/spreadsheets');
+      // Mavjud email-parol hisobini almashtirmaymiz: Google'ni unga bog'laymiz.
+      // Akkaunt bo'lmasa, Google kirishi yangi Firebase sessiyasini ochadi.
+      if (auth.currentUser) await authMod.linkWithRedirect(auth.currentUser, provider);
+      else await authMod.signInWithRedirect(auth, provider);
+      return true; // Sahifa Google'ga yo'naltiriladi.
+    } catch (e) {
+      C.error = uzErr(e); emit(); return false;
+    }
+  };
+
+  C.disconnectSheets = function () {
+    sheetsToken = null; C.sheetsConnected = false; C.sheetsEmail = null; emit();
+  };
+
+  C.sheetsFetch = async function (url, options) {
+    if (!sheetsToken) throw new Error('Google Sheets ruxsati tugagan. Qayta ulang.');
+    const headers = Object.assign({}, (options && options.headers) || {}, { Authorization: 'Bearer ' + sheetsToken });
+    const res = await fetch(url, Object.assign({}, options || {}, { headers }));
+    if (res.status === 401 || res.status === 403) { C.disconnectSheets(); throw new Error('Google Sheets ruxsati tugagan. Qayta ulang.'); }
+    return res;
+  };
+
   C.signIn = async function (email, password) {
     C.error = null;
     setStatus('connecting');
@@ -209,6 +262,7 @@
       if (auth) await authMod.signOut(auth);
     } catch (e) {}
     sync = null;
+    sheetsToken = null; C.sheetsConnected = false; C.sheetsEmail = null;
     rememberUser(null);
     C.error = null;
     setStatus('signed-out');
@@ -229,10 +283,16 @@
   C.resume = async function () {
     let was = null;
     try { was = localStorage.getItem('rejam-cloud-on'); } catch (e) {}
-    if (!was) return;
+    if (!was) {
+      // Google Sheets OAuth redirecti Firebase'ga oldin kirmagan foydalanuvchida
+      // ham qaytadi; natijani bir marta ushlab qolamiz.
+      try { await loadSDK(); if (await finishSheetsRedirect()) await afterAuth(); } catch(e) {}
+      return;
+    }
     setStatus('connecting');
     try {
       await loadSDK();
+      await finishSheetsRedirect();
       const user = await new Promise(res => {
         const un = authMod.onAuthStateChanged(auth, u => { un(); res(u); });
       });
