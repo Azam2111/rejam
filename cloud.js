@@ -34,6 +34,7 @@
     sheetsFetch() { return Promise.reject(new Error('Google Sheets ulanmagan')); },
     sheetsConnected: false,
     sheetsEmail: null,
+    sheetsError: null,
     notifyLocalChange() {},
     resume() { return Promise.resolve(); },
     onChange: null,
@@ -173,6 +174,8 @@
     sheetsToken = credential.accessToken;
     C.sheetsConnected = true;
     C.sheetsEmail = (result.user && result.user.email) || (auth.currentUser && auth.currentUser.email) || null;
+    C.sheetsError = null;
+    try { localStorage.removeItem('rejam-sheets-oauth-pending'); } catch(e) {}
     return true;
   }
 
@@ -187,23 +190,26 @@
   }
 
   C.connectSheets = async function () {
-    C.error = null;
+    C.error = null; C.sheetsError = null;
     try {
       await loadSDK();
       const provider = new authMod.GoogleAuthProvider();
       provider.addScope('https://www.googleapis.com/auth/spreadsheets');
       // Mavjud email-parol hisobini almashtirmaymiz: Google'ni unga bog'laymiz.
       // Akkaunt bo'lmasa, Google kirishi yangi Firebase sessiyasini ochadi.
+      try { localStorage.setItem('rejam-sheets-oauth-pending', '1'); } catch(e) {}
       if (auth.currentUser) await authMod.linkWithRedirect(auth.currentUser, provider);
       else await authMod.signInWithRedirect(auth, provider);
       return true; // Sahifa Google'ga yo'naltiriladi.
     } catch (e) {
-      C.error = uzErr(e); emit(); return false;
+      C.sheetsError = uzErr(e);
+      try { localStorage.removeItem('rejam-sheets-oauth-pending'); } catch(x) {}
+      C.error = C.sheetsError; emit(); return false;
     }
   };
 
   C.disconnectSheets = function () {
-    sheetsToken = null; C.sheetsConnected = false; C.sheetsEmail = null; emit();
+    sheetsToken = null; C.sheetsConnected = false; C.sheetsEmail = null; C.sheetsError = null; emit();
   };
 
   C.sheetsFetch = async function (url, options) {
@@ -262,7 +268,7 @@
       if (auth) await authMod.signOut(auth);
     } catch (e) {}
     sync = null;
-    sheetsToken = null; C.sheetsConnected = false; C.sheetsEmail = null;
+    sheetsToken = null; C.sheetsConnected = false; C.sheetsEmail = null; C.sheetsError = null;
     rememberUser(null);
     C.error = null;
     setStatus('signed-out');
@@ -283,22 +289,30 @@
   C.resume = async function () {
     let was = null;
     try { was = localStorage.getItem('rejam-cloud-on'); } catch (e) {}
+    let sheetsPending = null;
+    try { sheetsPending = localStorage.getItem('rejam-sheets-oauth-pending'); } catch(e) {}
     if (!was) {
       // Google Sheets OAuth redirecti Firebase'ga oldin kirmagan foydalanuvchida
       // ham qaytadi; natijani bir marta ushlab qolamiz.
-      try { await loadSDK(); if (await finishSheetsRedirect()) await afterAuth(); } catch(e) {}
+      try {
+        await loadSDK();
+        if (await finishSheetsRedirect()) await afterAuth();
+        else if (sheetsPending) { C.sheetsError = 'Google ruxsati ilovaga qaytmadi. Safari oynasida emas, shu o\'rnatilgan ilovada qayta ulang.'; emit(); }
+      } catch(e) { C.sheetsError = uzErr(e); emit(); }
       return;
     }
     setStatus('connecting');
     try {
       await loadSDK();
-      await finishSheetsRedirect();
+      const gotSheets = await finishSheetsRedirect();
+      if (!gotSheets && sheetsPending) { C.sheetsError = 'Google ruxsati ilovaga qaytmadi. Safari oynasida emas, shu o\'rnatilgan ilovada qayta ulang.'; emit(); }
       const user = await new Promise(res => {
         const un = authMod.onAuthStateChanged(auth, u => { un(); res(u); });
       });
       if (!user) { rememberUser(null); setStatus('signed-out'); return; }
       await afterAuth();
     } catch (e) {
+      if (sheetsPending) { C.sheetsError = uzErr(e); emit(); }
       C.error = uzErr(e);
       setStatus('error');
     }

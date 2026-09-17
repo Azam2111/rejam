@@ -1192,7 +1192,7 @@ async function bootstrapStorage(){
 
   const cloud = window.rejamCloud;
   if (cloud && cloud.enabled) {
-    cloud.onChange = () => { if (state.showBackup) render(); };
+    cloud.onChange = () => { if (state.showBackup || state.showSheet) render(); };
     if (cloud.resume) cloud.resume();
   }
 }
@@ -2738,6 +2738,8 @@ function renderSheetModal(){
           Chiqqan havolani shu yerga qo'ying.</p>
         <input class="rp-cloud-input" id="f-sheet-url" data-draft="sheeturl" placeholder="https://docs.google.com/spreadsheets/..." value="${esc(state.sheetUrl)}" />
         ${state.sheetMsg ? `<div class="${state.sheetMsg.bad ? 'rp-cloud-err' : 'rp-cloud-ok'}">${esc(state.sheetMsg.text)}</div>` : ''}
+        ${cloud && cloud.sheetsError ? `<div class="rp-cloud-err">Google yozish ulanmagan: ${esc(cloud.sheetsError)}</div>` : ''}
+        ${cloud && cloud.sheetsConnected ? `<div class="rp-cloud-ok">Google yozish ulangan${cloud.sheetsEmail ? ': ' + esc(cloud.sheetsEmail) : ''}</div>` : ''}
         <button class="rp-save-btn" data-action="sheet-save"${state.sheetBusy ? ' disabled' : ''}>${state.sheetBusy ? 'Ulanmoqda...' : 'Saqlash va o\'qish'}</button>
         ${!canWrite
           ? `<button class="rp-add-btn" data-action="sheet-connect-google">Google orqali yozishni ulash</button>`
