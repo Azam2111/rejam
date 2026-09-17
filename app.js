@@ -167,7 +167,7 @@ function splitScripts(raw, mode){
   return { items, header: null, mode: m };
 }
 
-// Qaysi ustun matn, qaysisi mavzu - o'rtacha uzunlikka qarab hal qilinadi.
+// Aniq sarlavha bo'lsa taxmin qilmaymiz. Aks holda eski uzunlik qoidasi ishlaydi.
 // Natija { items, header } - sarlavha tashlangan bo'lsa, u YASHIRILMAYDI,
 // foydalanuvchi ko'rib chiqish oynasida ko'radi va xato bo'lsa sezadi.
 function scriptsFromTable(rows){
@@ -176,7 +176,16 @@ function scriptsFromTable(rows){
 
   const pick = (r, col) => (r[col] || '').trim();
   let textCol = 0;
-  if (width > 1) {
+  let tagCol = -1;
+  const normHeader = v => String(v == null ? '' : v).trim().toLocaleLowerCase('uz').replace(/\s+/g, ' ');
+  const headers = rows[0].map(normHeader);
+  const exactText = new Set(['matn', 'reels matni', 'draft matn', 'script']);
+  const exactTag = new Set(['mavzu', 'kategoriya', 'tag']);
+  const namedTextCol = headers.findIndex(h => exactText.has(h));
+  if (namedTextCol >= 0) {
+    textCol = namedTextCol;
+    tagCol = headers.findIndex(h => exactTag.has(h));
+  } else if (width > 1) {
     const avg = [];
     for (let c = 0; c < width; c++) {
       let sum = 0, cnt = 0;
@@ -190,8 +199,9 @@ function scriptsFromTable(rows){
   // gap belgilari yo'q, va qolgan qatorlarning MEDIANASI undan ancha uzun.
   // Median o'rtachadan yaxshiroq - bitta uzun matn qarorni buzmaydi.
   let body = rows, header = null;
+  if (namedTextCol >= 0) { body = rows.slice(1); header = pick(rows[0], textCol); }
   const first = pick(rows[0], textCol);
-  if (rows.length >= 2 && first && first.length <= 25 && !/[.!?\n]/.test(first)) {
+  if (namedTextCol < 0 && rows.length >= 2 && first && first.length <= 25 && !/[.!?\n]/.test(first)) {
     const rest = rows.slice(1).map(r => pick(r, textCol).length).filter(n => n > 0).sort((a, b) => a - b);
     const med = rest.length ? rest[Math.floor(rest.length / 2)] : 0;
     if (med > first.length * 3) { body = rows.slice(1); header = first; }
@@ -202,7 +212,8 @@ function scriptsFromTable(rows){
     const text = pick(r, textCol);
     if (!text) continue;
     let tag = '';
-    for (let c = 0; c < width; c++) {
+    if (tagCol >= 0 && pick(r, tagCol)) tag = pick(r, tagCol);
+    for (let c = 0; !tag && c < width; c++) {
       if (c === textCol) continue;
       const v = pick(r, c);
       if (v && v.length <= 60) { tag = v; break; }
@@ -425,6 +436,9 @@ let state = {
   usedScripts: [],           // ishlatilgan matn ID'lari - BULUTGA yuboriladi
   showLibrary: false,
   showImportScripts: false,
+  showAddScript: false,
+  showQuickAdd: false,
+  appScriptDraft: '',
   showAddPost: false,
   editingPostId: null,
   libQuery: '',
@@ -444,7 +458,10 @@ let state = {
   sheetMsg: null,
   showSheet: false,
   showSplit: false,
+  showContentSettings: false,
   splitCount: '',
+  contentPerDay: 1,
+  contentStartDate: '',
   showPick: false,
   showPastPosts: false,
   newCatName: '',
@@ -491,7 +508,7 @@ function safeParse(s, fallback){ try { return s ? JSON.parse(s) : fallback; } ca
 // Prinsip: IndexedDB kanonik manba. localStorage tezkor cache/fallback.
 // Bo'shlik hech qachon "authority" emas - faqat revision hal qiladi.
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const DB_NAME = 'rejam-db', DB_STORE = 'kv';
 const IDB_MAIN = 'snapshot-v3';
 const IDB_PRE_MIGRATION = 'pre-migration-v2';
@@ -765,6 +782,7 @@ function validateScript(raw, seen, issues){
     id: cleanId(raw.id, seen, issues, 'Matn'),
     text,
     tag: cleanText(raw.tag, 60).trim(),
+    source: raw.source === 'sheet' ? 'sheet' : 'app',
     createdAt: createdAt === null ? Date.now() : createdAt,
   };
 }
@@ -815,7 +833,17 @@ function validateEnvelope(raw){
   const tasks = (rt || []).map(x => validateTask(x, seen, issues)).filter(Boolean);
   const ideas = (ri || []).map(x => validateIdea(x, seen, issues)).filter(Boolean);
   const posts = (ro || []).map(x => validatePost(x, seen, issues)).filter(Boolean);
-  const scripts = (rs || []).map(x => validateScript(x, seen, issues)).filter(Boolean);
+  // Eski backupdagi source yo'q qiymati app deb olinadi. Bir xil matn ikki
+  // manbadan kelsa bitta qoladi; app nusxasi sheet nusxasidan ustun.
+  const scriptByKey = new Map();
+  for (const rawScript of (rs || [])) {
+    const script = validateScript(rawScript, seen, issues);
+    if (!script) continue;
+    const key = scriptKey(script.text);
+    const previous = scriptByKey.get(key);
+    if (!previous || (previous.source === 'sheet' && script.source === 'app')) scriptByKey.set(key, script);
+  }
+  const scripts = Array.from(scriptByKey.values());
 
   // Ishlatilgan matn ID'lari - faqat haqiqatan mavjud ID shakli o'tadi
   const usedScripts = [];
@@ -840,6 +868,8 @@ function validateEnvelope(raw){
       deviceId: cleanText(raw.deviceId, 64) || deviceId(),
       plans, tasks, ideas, categories: cats, posts, scripts, usedScripts,
       sheetUrl: cleanText(raw.sheetUrl, 400).trim(),
+      contentPerDay: Math.max(1, Math.min(10, Math.floor(Number(raw.contentPerDay) || 1))),
+      contentStartDate: isValidDateKey(raw.contentStartDate) ? raw.contentStartDate : '',
     },
     counts: countsOf({ plans, tasks, ideas, posts, scripts }),
   };
@@ -873,6 +903,8 @@ function currentEnvelope(bumpRevision){
     plans: state.plans, tasks: state.tasks, ideas: state.ideas, categories: state.categories,
     posts: state.posts, scripts: state.scripts, usedScripts: state.usedScripts,
     sheetUrl: state.sheetUrl,
+    contentPerDay: state.contentPerDay,
+    contentStartDate: state.contentStartDate,
   };
 }
 
@@ -1121,6 +1153,8 @@ async function bootstrapStorage(){
     state.scripts = best.env.scripts || [];
     state.usedScripts = best.env.usedScripts || [];
     state.sheetUrl = best.env.sheetUrl || '';
+    state.contentPerDay = best.env.contentPerDay || 1;
+    state.contentStartDate = best.env.contentStartDate || '';
     revisionCounter = best.env.revision;
     if (best.issues && best.issues.length) state.readErrors.push(...best.issues.slice(0, 5));
 
@@ -1319,7 +1353,7 @@ async function confirmImport(){
   // 1) Importdan oldingi holatni saqlaymiz
   let recovered = false;
   try {
-    await idbSet(IDB_PRE_IMPORT, { savedAt: Date.now(), plans: state.plans, tasks: state.tasks, ideas: state.ideas });
+    await idbSet(IDB_PRE_IMPORT, currentEnvelope(false));
     recovered = true;
   } catch(e){}
   if (!recovered) {
@@ -1329,10 +1363,9 @@ async function confirmImport(){
 
   // 2) Atomik yozamiz
   revisionCounter = Math.max(revisionCounter, env.revision) + 1;
-  const toWrite = {
-    schemaVersion: SCHEMA_VERSION, revision: revisionCounter, updatedAt: Date.now(),
-    deviceId: deviceId(), plans: env.plans, tasks: env.tasks, ideas: env.ideas,
-  };
+  const toWrite = Object.assign({}, env, {
+    schemaVersion: SCHEMA_VERSION, revision: revisionCounter, updatedAt: Date.now(), deviceId: deviceId(),
+  });
   let ok = false;
   try { await idbSet(IDB_MAIN, toWrite); ok = true; } catch(e){}
   if (!ok) { state.importPreview = { error: 'Yozib bo\'lmadi. Hozirgi ma\'lumotingiz o\'zgarmadi.' }; render(); return; }
@@ -1347,7 +1380,10 @@ async function confirmImport(){
 
   // 4) Faqat endi UI holatini almashtiramiz
   state.plans = env.plans; state.tasks = env.tasks; state.ideas = env.ideas;
-  state.categories = env.categories || [];
+  state.categories = env.categories || []; state.posts = env.posts || [];
+  state.scripts = env.scripts || []; state.usedScripts = env.usedScripts || [];
+  state.sheetUrl = env.sheetUrl || ''; state.contentPerDay = env.contentPerDay || 1;
+  state.contentStartDate = env.contentStartDate || '';
   try { localStorage.setItem(LS_ENVELOPE, JSON.stringify(toWrite)); } catch(e){}
   state.importPreview = null;
   state.showBackup = false;
@@ -1361,6 +1397,9 @@ async function revertImport(){
   try { prev = await idbGet(IDB_PRE_IMPORT); } catch(e){}
   if (!prev) { toast('Qaytarish nuqtasi topilmadi'); return; }
   state.plans = prev.plans || []; state.tasks = prev.tasks || []; state.ideas = prev.ideas || [];
+  state.categories = prev.categories || []; state.posts = prev.posts || []; state.scripts = prev.scripts || [];
+  state.usedScripts = prev.usedScripts || []; state.sheetUrl = prev.sheetUrl || '';
+  state.contentPerDay = prev.contentPerDay || 1; state.contentStartDate = prev.contentStartDate || '';
   state.canRevertImport = false;
   await commit();
   render();
@@ -1811,12 +1850,15 @@ function render(){
     ${state.showAddTask ? renderAddTaskModal() : ''}
     ${state.showBackup ? renderBackupModal() : ''}
     ${state.showCapture ? renderCaptureModal() : ''}
+    ${state.showQuickAdd ? renderQuickAddModal() : ''}
+    ${state.showAddScript ? renderAddScriptModal() : ''}
     ${state.showAddPost ? renderAddPostModal(today) : ''}
     ${state.showLibrary ? renderLibraryModal() : ''}
     ${state.showImportScripts ? renderImportScriptsModal() : ''}
     ${state.showPick ? renderPickModal() : ''}
     ${state.showSheet ? renderSheetModal() : ''}
     ${state.showSplit ? renderSplitModal() : ''}
+    ${state.showContentSettings ? renderContentSettingsModal() : ''}
     ${state.showReelImport ? renderReelImportModal() : ''}
     ${state.showReport ? renderReportModal() : ''}
     ${renderFab()}
@@ -1825,8 +1867,8 @@ function render(){
   // sync known ids after render so entrance animation only plays once per item
   knownPlanIds = new Set(state.plans.map(p=>p.id));
   knownTaskIds = new Set(state.tasks.map(t=>t.id));
-  if (state.showCapture) {
-    const ta = document.getElementById('f-idea-text');
+  if (state.showCapture || state.showAddScript) {
+    const ta = document.getElementById(state.showCapture ? 'f-idea-text' : 'f-app-script');
     if (ta) {
       ta.focus();
       ta.setSelectionRange(ta.value.length, ta.value.length);
@@ -2097,9 +2139,26 @@ function renderIdeaCard(it){
 
 function renderFab(){
   if (state.showAddPlan || state.showAddTask || state.showBackup || state.showCapture
-      || state.showAddPost || state.showLibrary || state.showImportScripts || state.showPick
-      || state.showReelImport || state.showReport || state.showSheet || state.showSplit) return '';
-  return `<button class="rp-fab" data-action="open-capture" aria-label="Fikr yozib olish">&#43;</button>`;
+      || state.showQuickAdd || state.showAddScript || state.showAddPost || state.showLibrary || state.showImportScripts || state.showPick
+      || state.showReelImport || state.showReport || state.showSheet || state.showSplit || state.showContentSettings) return '';
+  return `<button class="rp-fab" data-action="open-quick-add" aria-label="Yangi yozuv qo'shish">&#43;</button>`;
+}
+
+function renderQuickAddModal(){
+  return `<div class="rp-modal-overlay" data-action="close-quick-add"><div class="rp-modal rp-modal-capture" data-action="noop">
+    <div class="rp-modal-header"><span>Qo'shish</span><button class="rp-icon-btn" data-action="close-quick-add">&#10005;</button></div>
+    <button class="rp-add-btn" data-action="quick-idea">Fikr yozish</button>
+    <button class="rp-save-btn" data-action="quick-script">Reels matni yozish</button>
+  </div></div>`;
+}
+
+function renderAddScriptModal(){
+  return `<div class="rp-modal-overlay" data-action="close-add-script"><div class="rp-modal rp-modal-tall" data-action="noop">
+    <div class="rp-modal-header"><span>Reels matni yozish</span><button class="rp-icon-btn" data-action="close-add-script">&#10005;</button></div>
+    <p class="rp-note">Tayyor Reels matnini yozing yoki shu yerga qo'ying. U darhol Matn kutubxonasiga tushadi.</p>
+    <textarea id="f-app-script" class="rp-idea-input rp-script-input" data-draft="appscript" rows="9" placeholder="Reels matni...">${esc(state.appScriptDraft)}</textarea>
+    <button class="rp-save-btn" data-action="save-app-script">Zaxiraga qo'shish</button>
+  </div></div>`;
 }
 
 function renderCaptureModal(){
@@ -2333,35 +2392,71 @@ async function fetchSheet(silent){
     render(); return;
   }
   const parsed = scriptsFromTable(parseTable(text));
-  const have = new Set(state.scripts.map(x => x.id));
+  const have = new Set(state.scripts.map(x => scriptKey(x.text)));
+  const fromSheet = new Set();
   const fresh = [];
   for (const f of parsed.items) {
     const id = scriptKey(f.text);
+    fromSheet.add(id);
     if (have.has(id)) continue;
     have.add(id);
-    fresh.push({ id, text: f.text.slice(0, 8000), tag: f.tag.slice(0, 60), createdAt: Date.now() });
+    fresh.push({ id, text: f.text.slice(0, 8000), tag: f.tag.slice(0, 60), source: 'sheet', createdAt: Date.now() });
   }
-  if (fresh.length) state.scripts = state.scripts.concat(fresh);
+  const before = state.scripts.length;
+  state.scripts = state.scripts.filter(sc => sc.source !== 'sheet' || fromSheet.has(scriptKey(sc.text))).concat(fresh);
+  const removed = before + fresh.length - state.scripts.length;
   state.sheetFetchedAt = Date.now();
-  state.sheetMsg = { bad: false, text: fresh.length
-    ? fresh.length + ' ta yangi matn olindi'
+  state.sheetMsg = { bad: false, text: fresh.length || removed
+    ? (fresh.length ? fresh.length + ' ta yangi matn olindi' : 'Yangi matn yo\'q') + (removed ? ', ' + removed + ' ta eski Sheet matni chiqarildi' : '')
     : 'Yangi matn yo\'q — hammasi allaqachon bor' };
   commit(); render();
   if (!silent && fresh.length) toast(fresh.length + ' ta yangi matn');
+}
+
+function addAppScript(raw){
+  const text = String(raw == null ? '' : raw).trim().slice(0, 8000);
+  if (!text) { toast('Matnni yozing'); return false; }
+  const id = scriptKey(text);
+  if (state.scripts.some(sc => scriptKey(sc.text) === id)) {
+    toast('Bu matn kutubxonada allaqachon bor');
+    return false;
+  }
+  state.scripts = state.scripts.concat([{ id, text, tag: '', source: 'app', createdAt: Date.now() }]);
+  commit();
+  return true;
 }
 
 // ---------- Kunlarga bo'lish ----------
 // Matn zaxirasidan N ta matnni ketma-ket bo'sh kunlarga taqsimlaydi.
 function busyDates(){ return new Set(state.posts.map(p => p.date).filter(Boolean)); }
 
-function nextFreeDates(n, fromDate){
+function reserveStart(todayKey){
+  const lastFuture = state.posts.filter(p => p.date && p.date > todayKey).map(p => p.date).sort().pop();
+  return lastFuture ? { date: toKey(addDays(parseKey(lastFuture), 1)), locked: true, last: lastFuture }
+    : { date: isValidDateKey(state.contentStartDate) ? state.contentStartDate : todayKey, locked: false, last: null };
+}
+
+function scriptReservePlan(todayKey, count, perDay){
+  const n = Math.max(0, Number(count) || 0);
+  const daily = Math.max(1, Math.min(10, Math.floor(Number(perDay) || 1)));
+  const start = reserveStart(todayKey);
+  const days = Math.ceil(n / daily);
+  return { count: n, perDay: daily, start: start.date, locked: start.locked, lastPlanned: start.last,
+    end: days ? toKey(addDays(parseKey(start.date), days - 1)) : null, days };
+}
+
+function nextFreeDates(n, fromDate, perDay){
   const busy = busyDates();
   const out = [];
   let d = new Date(fromDate);
+  const daily = Math.max(1, Math.min(10, Math.floor(Number(perDay) || 1)));
   let guard = 0;
   while (out.length < n && guard++ < 2000) {
     const k = toKey(d);
-    if (!busy.has(k)) { out.push(k); busy.add(k); }
+    if (!busy.has(k)) {
+      for (let i = 0; i < daily && out.length < n; i++) out.push(k);
+      busy.add(k);
+    }
     d = addDays(d, 1);
   }
   return out;
@@ -2371,8 +2466,8 @@ function splitIntoDays(count){
   const pool = unusedScripts();
   const n = Math.max(0, Math.min(Number(count) || 0, pool.length));
   if (!n) return 0;
-  const today = new Date();
-  const dates = nextFreeDates(n, today);
+  const plan = scriptReservePlan(toKey(new Date()), n, state.contentPerDay);
+  const dates = nextFreeDates(n, parseKey(plan.start), plan.perDay);
   const now = Date.now();
   const add = [];
   for (let i = 0; i < n; i++) {
@@ -2442,7 +2537,7 @@ function prepareScriptImport(raw, mode){
     state.scriptPreview = { error: 'Juda ko\'p (20000+). Qismlarga bo\'lib qo\'ying.' };
     render(); return;
   }
-  const have = new Set(state.scripts.map(x => x.id));
+  const have = new Set(state.scripts.map(x => scriptKey(x.text)));
   const seenNow = new Set();
   const fresh = [];
   let dup = 0;
@@ -2451,7 +2546,7 @@ function prepareScriptImport(raw, mode){
     if (seenNow.has(id)) { dup++; continue; }
     seenNow.add(id);
     if (have.has(id)) { dup++; continue; }
-    fresh.push({ id, text: f.text.slice(0, 8000), tag: f.tag.slice(0, 60), createdAt: Date.now() });
+    fresh.push({ id, text: f.text.slice(0, 8000), tag: f.tag.slice(0, 60), source: 'app', createdAt: Date.now() });
   }
   state.importMode = parsed.mode;
   state.scriptPreview = {
@@ -2539,18 +2634,24 @@ function renderReadyBar(todayKey){
 function renderScriptBank(yangi){
   const linked = !!sheetCsvUrl(state.sheetUrl);
   const tone = yangi >= 30 ? 'ok' : (yangi >= 10 ? 'warn' : 'bad');
+  const plan = scriptReservePlan(toKey(new Date()), yangi, state.contentPerDay);
+  const schedule = yangi
+    ? `${plan.lastPlanned ? esc(fmtUz(parseKey(plan.lastPlanned))) + 'gacha rejalangan · ' : ''}kuniga ${plan.perDay} tadan · ${esc(fmtUz(parseKey(plan.start)))}dan ${esc(fmtUz(parseKey(plan.end)))}gacha yetadi`
+    : 'Ishlatilmagan matn qolmadi';
   return `
     <div class="rp-bank">
       <div class="rp-bank-nums">
         <span class="rp-bank-big rp-tone-${tone}">${yangi}</span>
-        <span class="rp-bank-lbl">ta matn navbatda<br><i>${linked ? 'jadval ulangan' : 'jadval ulanmagan'}</i></span>
+        <span class="rp-bank-lbl">ta matn zaxirada<br><i>${linked ? 'jadval ulangan' : 'jadval ulanmagan'}</i></span>
       </div>
+      <div class="rp-bank-plan">${schedule}</div>
       <div class="rp-bank-acts">
         ${linked
           ? `<button class="rp-bank-btn" data-action="sheet-sync"${state.sheetBusy ? ' disabled' : ''}>${state.sheetBusy ? '...' : 'Yangilash'}</button>`
           : `<button class="rp-bank-btn" data-action="open-sheet">Jadvalni ulash</button>`}
         ${yangi ? `<button class="rp-bank-btn rp-bank-btn2" data-action="open-split">Kunlarga bo'l</button>` : ''}
       </div>
+      <button class="rp-link-btn rp-bank-link" data-action="open-content-settings">Hisob sozlamasi</button>
       ${state.sheetMsg ? `<div class="rp-bank-msg${state.sheetMsg.bad ? ' rp-bank-msg-bad' : ''}">${esc(state.sheetMsg.text)}</div>` : ''}
       ${linked ? `<button class="rp-link-btn rp-bank-link" data-action="open-sheet">Jadval sozlamasi</button>` : ''}
     </div>`;
@@ -2576,12 +2677,13 @@ function renderSheetModal(){
 function renderSplitModal(){
   const pool = unusedScripts().length;
   const n = Math.max(0, Math.min(Number(state.splitCount) || 0, pool));
-  const dates = n ? nextFreeDates(n, new Date()) : [];
+  const plan = scriptReservePlan(toKey(new Date()), n, state.contentPerDay);
+  const dates = n ? nextFreeDates(n, parseKey(plan.start), plan.perDay) : [];
   return `
     <div class="rp-modal-overlay" data-action="close-split">
       <div class="rp-modal rp-modal-tall" data-action="noop">
         <div class="rp-modal-header"><span>Kunlarga bo'lish</span><button class="rp-icon-btn" data-action="close-split">&#10005;</button></div>
-        <p class="rp-note">Navbatdagi matnlardan kerakligini olib, bo'sh kunlarga bittadan taqsimlaydi. Band kunlar o'tkazib yuboriladi.</p>
+        <p class="rp-note">Ishlatilmagan matnlarni bo'sh kunlarga taqsimlaydi. Band kunlar o'tkazib yuboriladi; kuniga ${plan.perDay} tadan.</p>
         <label class="rp-field"><span>Nechta matn (navbatda ${pool} ta)</span>
           <input id="f-split" type="number" min="1" max="${pool}" data-draft="split" value="${esc(state.splitCount)}" placeholder="${Math.min(pool, 7)}" />
         </label>
@@ -2593,6 +2695,22 @@ function renderSplitModal(){
         <button class="rp-save-btn" data-action="do-split"${n ? '' : ' disabled'}>Taqsimlash</button>
       </div>
     </div>`;
+}
+
+function renderContentSettingsModal(){
+  const todayKey = toKey(new Date());
+  const plan = scriptReservePlan(todayKey, unusedScripts().length, state.contentPerDay);
+  return `<div class="rp-modal-overlay" data-action="close-content-settings"><div class="rp-modal" data-action="noop">
+    <div class="rp-modal-header"><span>Hisob sozlamasi</span><button class="rp-icon-btn" data-action="close-content-settings">&#10005;</button></div>
+    <label class="rp-field"><span>Kuniga nechta Reel</span>
+      <select id="f-content-per-day" data-action="noop">${[1,2,3,4,5].map(n => `<option value="${n}"${plan.perDay === n ? ' selected' : ''}>${n} ta</option>`).join('')}</select>
+    </label>
+    <label class="rp-field"><span>Boshlanish sanasi</span>
+      <input id="f-content-start" type="date" value="${esc(plan.start)}" ${plan.locked ? 'disabled' : ''} />
+    </label>
+    <p class="rp-note rp-note-small">${plan.locked ? esc(fmtUz(parseKey(plan.lastPlanned))) + 'gacha rejalangan kontent bor — boshlanish sanasi avtomatik.' : 'Kelajakda rejalangan Reel bo\'lmasa, hisob shu sanadan boshlanadi.'}</p>
+    <button class="rp-save-btn" data-action="save-content-settings">Saqlash</button>
+  </div></div>`;
 }
 
 function renderFunnel(st){
@@ -2675,6 +2793,7 @@ function renderLibraryModal(){
       <div class="rp-modal rp-modal-tall" data-action="noop">
         <div class="rp-modal-header"><span>Matn kutubxonasi</span><button class="rp-icon-btn" data-action="close-library">&#10005;</button></div>
         <div class="rp-lib-stat">${yangi} ta ishlatilmagan &middot; jami ${total}</div>
+        <button class="rp-save-btn" data-action="open-add-script">Reels matni yozish</button>
         <button class="rp-add-btn" data-action="open-import-scripts">Matnlarni qo'yish</button>
         ${total === 0 ? `<p class="rp-note">Google Sheets'da ustunni belgilab nusxalang, keyin shu tugmani bosib qo'ying.</p>` : `
           <input class="rp-cloud-input" id="f-lib-q" data-draft="libq" placeholder="Qidirish..." value="${esc(state.libQuery)}" />
@@ -3375,6 +3494,18 @@ const handlers = {
   'idea-to-task': (btn) => ideaToTask(btn.dataset.id),
 
   'open-capture': () => { ideaDraft = ''; state.editingIdeaId = null; state.showCapture = true; render(); },
+  'open-quick-add': () => { state.showQuickAdd = true; render(); },
+  'close-quick-add': () => { state.showQuickAdd = false; render(); },
+  'quick-idea': () => { state.showQuickAdd = false; ideaDraft = ''; state.editingIdeaId = null; state.showCapture = true; render(); },
+  'quick-script': () => { state.showQuickAdd = false; state.appScriptDraft = ''; state.showAddScript = true; render(); },
+  'open-add-script': () => { state.appScriptDraft = ''; state.showAddScript = true; render(); },
+  'close-add-script': () => { state.showAddScript = false; state.appScriptDraft = ''; render(); },
+  'save-app-script': () => {
+    const el = document.getElementById('f-app-script');
+    state.appScriptDraft = (el && el.value) || state.appScriptDraft;
+    if (!addAppScript(state.appScriptDraft)) return;
+    state.showAddScript = false; state.appScriptDraft = ''; render(); toast('Matn zaxiraga qo\'shildi');
+  },
   'close-capture': () => { state.showCapture = false; state.editingIdeaId = null; ideaDraft = ''; render(); },
   'edit-idea': (btn) => editIdea(btn.dataset.id),
   'save-idea': () => addIdea(),
@@ -3469,6 +3600,15 @@ const handlers = {
     const n = splitIntoDays(state.splitCount);
     state.showSplit = false; render();
     toast(n ? n + ' ta matn kunlarga bo\'lindi' : 'Bo\'linmadi');
+  },
+  'open-content-settings': () => { state.showContentSettings = true; render(); },
+  'close-content-settings': () => { state.showContentSettings = false; render(); },
+  'save-content-settings': () => {
+    const per = document.getElementById('f-content-per-day');
+    const start = document.getElementById('f-content-start');
+    state.contentPerDay = Math.max(1, Math.min(10, Math.floor(Number(per && per.value) || 1)));
+    if (!reserveStart(toKey(new Date())).locked) state.contentStartDate = isValidDateKey(start && start.value) ? start.value : '';
+    state.showContentSettings = false; commit(); render();
   },
 
   'open-reel-import': () => { state.showReelImport = true; state.reelPreview = null; state.reelRaw = ''; render(); },
@@ -3577,6 +3717,7 @@ document.addEventListener('input', (e) => {
   const el = e.target;
   if (el.dataset && el.dataset.draft === 'newcat') state.newCatName = el.value;
   else if (el.dataset && el.dataset.draft === 'idea') ideaDraft = el.value;
+  else if (el.dataset && el.dataset.draft === 'appscript') state.appScriptDraft = el.value;
   else if (el.dataset && el.dataset.draft === 'plan') planDraft[el.dataset.field] = el.value;
   else if (el.dataset && el.dataset.draft === 'task') taskDraft[el.dataset.field] = el.value;
   else if (el.id === 'f-report-date') { state.reportDate = el.value; render(); }
