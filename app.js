@@ -3240,7 +3240,8 @@ function renderShootBatches(){
           const done = shot.has(item.id), sc = item.sc;
           return `<div class="rp-shoot-script${done ? ' rp-shoot-script-done' : ''}"><span>${i + 1}</span>${item.post ? `<b class="rp-shoot-date">${esc(fmtUz(parseKey(item.post.date)))}</b>` : ''}<div>${esc(sc ? sc.text : item.post.title)}</div>${sc ? `<button class="rp-link-btn" data-action="copy-script" data-id="${esc(sc.id)}">Nusxa</button>` : ''}<button class="rp-link-btn" data-action="toggle-batch-shot" data-batch="${esc(b.id)}" data-id="${esc(item.id)}">${done ? '✓ Olindi' : 'Olindi deb belgilash'}</button></div>`;
         }).join('')}</div>
-        <div class="rp-shoot-actions"><button class="rp-save-btn" data-action="finalize-batch" data-id="${esc(b.id)}"${shot.size ? '' : ' disabled'}>${shot.size ? shot.size + ' tasini sochib joylash' : 'Avval olinganlarini belgilang'}</button><button class="rp-link-btn" data-action="cancel-batch" data-id="${esc(b.id)}">Bekor qilish</button></div>
+        ${planned && shot.size && shot.size < items.length ? `<div class="rp-import-msg">Qolgan ${items.length - shot.size} ta matn keyingi s'yomka tanloviga qaytadi.</div>` : ''}
+        <div class="rp-shoot-actions"><button class="rp-save-btn" data-action="finalize-batch" data-id="${esc(b.id)}"${shot.size ? '' : ' disabled'}>${shot.size ? (planned ? shot.size + ' ta olinganni tasdiqlash' : shot.size + ' tasini sochib joylash') : 'Avval olinganlarini belgilang'}</button><button class="rp-link-btn" data-action="cancel-batch" data-id="${esc(b.id)}">Bekor qilish</button></div>
       </div>`;
     }).join('')}
   </div>`;

@@ -653,10 +653,12 @@ function serve(port){
     const done = finalizeShootBatch(batch.id);
     return { picked:picked.map(p => p.date), batchDates:batch.postIds.map(id => state.posts.find(p => p.id === id).date), beforeDates,
       afterDates:state.posts.map(p => p.date).join(','), done, total:state.posts.length,
-      filmed:state.posts.filter(p => p.videoAt).length, tagged:state.posts.filter(p => p.outfit === 'Oq futbolka').length };
+      filmed:state.posts.filter(p => p.videoAt).length, tagged:state.posts.filter(p => p.outfit === 'Oq futbolka').length,
+      unshotReturned:plannedShootPool('2026-09-18').some(p => p.id === batch.postIds[1]) };
   });
   check('syomka matnlari rejaning turli joylaridan avtomatik olinadi', JSON.stringify(plannedShoot.picked) === JSON.stringify(['2026-10-01','2026-10-05','2026-10-09']), JSON.stringify(plannedShoot));
   check('video olinganda chiqish sanalari o\'zgarmaydi', plannedShoot.done === 2 && plannedShoot.total === 9 && plannedShoot.beforeDates === plannedShoot.afterDates && plannedShoot.filmed === 2 && plannedShoot.tagged === 2, JSON.stringify(plannedShoot));
+  check('olinmagan matn keyingi syomka tanloviga qaytadi', plannedShoot.unshotReturned === true, JSON.stringify(plannedShoot));
 
   const meta = await page.evaluate(() => {
     state.posts = [{ id:'oldmeta', title:'Eski oq video', date:'2026-10-01', scriptId:null, note:'', outfit:'Oq futbolka', location:'Ofis', createdAt:1, editedAt:1, matnAt:1, videoAt:1, montajAt:null }];
