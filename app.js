@@ -443,6 +443,8 @@ let state = {
   showAddPost: false,
   showReadyDays: false,
   readyDaysDraft: '',
+  readyDaysSelected: [],       // modal ichidagi vaqtinchalik ✓ tanlovlar
+  readyDaysMonth: '',
   showShootBatch: false,
   shootBatchDraft: null,
   showScheduleScript: false,
@@ -3103,13 +3105,37 @@ function addReadyDays(raw){
   return { added:add.length, skipped:dates.length - add.length, invalid:false };
 }
 
+function shiftMonthKey(key, delta){
+  const [year, month] = String(key || '').slice(0, 7).split('-').map(Number);
+  const d = new Date((year || new Date().getFullYear()), (month || 1) - 1 + delta, 1);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-01`;
+}
+
 function renderReadyDaysModal(){
+  const todayKey = toKey(new Date());
+  const fallback = splitStart(todayKey).slice(0, 7) + '-01';
+  const monthKey = /^\d{4}-\d{2}-01$/.test(state.readyDaysMonth) ? state.readyDaysMonth : fallback;
+  const [year, month] = monthKey.slice(0, 7).split('-').map(Number);
+  const firstWeekday = (new Date(year, month - 1, 1).getDay() + 6) % 7;
+  const days = new Date(year, month, 0).getDate();
+  const selected = new Set(state.readyDaysSelected || []);
+  const busy = busyDates();
+  const cells = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push('<span class="rp-ready-cal-blank"></span>');
+  for (let day = 1; day <= days; day++) {
+    const key = `${year}-${pad(month)}-${pad(day)}`;
+    const taken = busy.has(key);
+    const checked = selected.has(key);
+    cells.push(`<button class="rp-ready-day${checked ? ' rp-ready-day-on' : ''}${taken ? ' rp-ready-day-taken' : ''}${key === todayKey ? ' rp-ready-day-today' : ''}" data-action="toggle-ready-date" data-date="${key}"${taken ? ' disabled' : ''}><span>${day}</span><i>${taken ? 'Rejada' : (checked ? '✓' : '')}</i></button>`);
+  }
   return `<div class="rp-modal-overlay" data-action="close-ready-days"><div class="rp-modal rp-modal-tall" data-action="noop">
     <div class="rp-modal-header"><span>Tayyor kunlarni belgilash</span><button class="rp-icon-btn" data-action="close-ready-days">&#10005;</button></div>
-    <p class="rp-note">Tayyor videolaringizning sanalarini bir qatorga bittadan yozing yoki vergul bilan ajrating. Ular Video tayyor deb belgilanadi va avto-taqsimlash bu kunlarni chetlab o'tadi.</p>
-    <textarea id="f-ready-days" class="rp-idea-input" rows="7" placeholder="01.10.2026&#10;05.10.2026&#10;10.10.2026">${esc(state.readyDaysDraft)}</textarea>
-    <p class="rp-note rp-note-small">Sana shakli: 01.10.2026 yoki 2026-10-01. Oldindan rejalangan sana qaytadan qo'shilmaydi.</p>
-    <button class="rp-save-btn" data-action="save-ready-days">Tayyor kunlarni saqlash</button>
+    <p class="rp-note">Video tayyor bo'lgan kunlarni bosing. Belgilangan kunda <b>✓</b> chiqadi va avto-taqsimlash uni chetlab o'tadi.</p>
+    <div class="rp-ready-cal-head"><button class="rp-icon-btn" data-action="shift-ready-month" data-delta="-1" aria-label="Oldingi oy">‹</button><b>${MONTHS_UZ[month - 1]} ${year}</b><button class="rp-icon-btn" data-action="shift-ready-month" data-delta="1" aria-label="Keyingi oy">›</button></div>
+    <div class="rp-ready-weekdays"><span>Du</span><span>Se</span><span>Ch</span><span>Pa</span><span>Ju</span><span>Sh</span><span>Ya</span></div>
+    <div class="rp-ready-calendar">${cells.join('')}</div>
+    <div class="rp-import-box"><div class="rp-import-row"><span>Belgilandi</span><b>${selected.size} ta kun</b></div><div class="rp-import-msg">“Rejada” yozilgan kunlar band; ular qayta qo'shilmaydi.</div></div>
+    <button class="rp-save-btn" data-action="save-ready-days"${selected.size ? '' : ' disabled'}>${selected.size ? selected.size + ' ta tayyor kunni saqlash' : 'Avval kunni ✓ qiling'}</button>
   </div></div>`;
 }
 
@@ -3927,16 +3953,23 @@ const handlers = {
     state.showAddPost = false;
     render();
   },
-  'open-ready-days': () => { state.readyDaysDraft = ''; state.showReadyDays = true; render(); },
-  'close-ready-days': () => { state.showReadyDays = false; state.readyDaysDraft = ''; render(); },
+  'open-ready-days': () => { state.readyDaysDraft = ''; state.readyDaysSelected = []; state.readyDaysMonth = splitStart(toKey(new Date())).slice(0, 7) + '-01'; state.showReadyDays = true; render(); },
+  'close-ready-days': () => { state.showReadyDays = false; state.readyDaysDraft = ''; state.readyDaysSelected = []; render(); },
   'save-ready-days': () => {
-    const area = document.getElementById('f-ready-days');
-    state.readyDaysDraft = (area && area.value) || state.readyDaysDraft;
+    state.readyDaysDraft = (state.readyDaysSelected || []).join('\n');
     const result = addReadyDays(state.readyDaysDraft);
-    if (result.invalid) { toast('To\'g\'ri sana topilmadi'); return; }
-    state.showReadyDays = false; state.readyDaysDraft = ''; render();
+    if (result.invalid) { toast('Avval kunni ✓ qiling'); return; }
+    state.showReadyDays = false; state.readyDaysDraft = ''; state.readyDaysSelected = []; render();
     toast(result.added + ' ta tayyor kun belgilandi' + (result.skipped ? '; ' + result.skipped + ' tasi avvaldan bor' : ''));
   },
+  'toggle-ready-date': (btn) => {
+    const key = btn.dataset.date;
+    if (!isValidDateKey(key) || busyDates().has(key)) return;
+    const selected = new Set(state.readyDaysSelected || []);
+    if (selected.has(key)) selected.delete(key); else selected.add(key);
+    state.readyDaysSelected = Array.from(selected).sort(); render();
+  },
+  'shift-ready-month': (btn) => { state.readyDaysMonth = shiftMonthKey(state.readyDaysMonth || (splitStart(toKey(new Date())).slice(0, 7) + '-01'), Number(btn.dataset.delta) || 0); render(); },
   'toggle-stage': (btn) => togglePostStage(btn.dataset.id, btn.dataset.stage),
   'delete-post': (btn) => deletePost(btn.dataset.id),
   'toggle-past': () => { state.showPastPosts = !state.showPastPosts; render(); },
