@@ -2541,13 +2541,9 @@ async function syncAppScriptsToSheet(silent){
 function busyDates(){ return new Set(state.posts.map(p => p.date).filter(Boolean)); }
 
 function reserveStart(todayKey){
-  // Foydalanuvchi nashr boshlanishini keyinga qo'ygan bo'lsa (masalan 1-oktabr),
-  // undan oldingi sentabr kartalari zaxira hisobini siljitmasligi kerak.
-  const chosenStart = isValidDateKey(state.contentStartDate) && state.contentStartDate > todayKey
-    ? state.contentStartDate : todayKey;
-  const lastFuture = state.posts.filter(p => p.date && p.date >= chosenStart).map(p => p.date).sort().pop();
-  return lastFuture ? { date: toKey(addDays(parseKey(lastFuture), 1)), locked: true, last: lastFuture }
-    : { date: chosenStart, locked: false, last: null };
+  // "Oxirgi reja tugagandan keyin" emas: sochib qo'yilgan rejalarning ORASIDAGI
+  // bo'sh kunlar ham zaxira uchun ishlatiladi. Shuning uchun faqat nashr starti kerak.
+  return { date: splitStart(todayKey), locked: false, last: null };
 }
 
 // Avto-taqsimlash zaxira hisobidan boshqa qoida bilan yuradi: foydalanuvchi
@@ -2566,9 +2562,10 @@ function scriptReservePlan(todayKey, count, perDay){
   const n = Math.max(0, Number(count) || 0);
   const daily = Math.max(1, Math.min(10, Math.floor(Number(perDay) || 1)));
   const start = reserveStart(todayKey);
-  const days = Math.ceil(n / daily);
-  return { count: n, perDay: daily, start: start.date, locked: start.locked, lastPlanned: start.last,
-    end: days ? toKey(addDays(parseKey(start.date), days - 1)) : null, days };
+  const dates = n ? nextFreeDates(n, parseKey(start.date), daily) : [];
+  const uniqueDays = new Set(dates).size;
+  return { count: n, perDay: daily, start: dates[0] || start.date, locked: start.locked, lastPlanned: start.last,
+    end: dates.length ? dates[dates.length - 1] : null, days: uniqueDays };
 }
 
 function nextFreeDates(n, fromDate, perDay){
@@ -2884,7 +2881,7 @@ function renderScriptBank(yangi){
   const tone = yangi >= 30 ? 'ok' : (yangi >= 10 ? 'warn' : 'bad');
   const plan = scriptReservePlan(toKey(new Date()), yangi, state.contentPerDay);
   const schedule = yangi
-    ? `${plan.lastPlanned ? esc(fmtUz(parseKey(plan.lastPlanned))) + 'gacha rejalangan · ' : ''}kuniga ${plan.perDay} tadan · ${esc(fmtUz(parseKey(plan.start)))}dan ${esc(fmtUz(parseKey(plan.end)))}gacha yetadi`
+    ? `${esc(fmtUz(parseKey(plan.start)))}dan bo'sh kunlarga · kuniga ${plan.perDay} tadan · ${esc(fmtUz(parseKey(plan.end)))}gacha yetadi`
     : 'Ishlatilmagan matn qolmadi';
   return `
     <div class="rp-bank">
@@ -3002,11 +2999,11 @@ function renderContentSettingsModal(){
     <label class="rp-field"><span>Kuniga nechta Reel</span>
       <select id="f-content-per-day" data-action="noop">${[1,2,3,4,5].map(n => `<option value="${n}"${plan.perDay === n ? ' selected' : ''}>${n} ta</option>`).join('')}</select>
     </label>
-    <label class="rp-field"><span>${plan.locked ? 'Zaxira qaysi sanadan hisoblanadi' : 'Nashr boshlanish sanasi'}</span>
+    <label class="rp-field"><span>Nashr boshlanish sanasi</span>
       <input id="f-content-start" type="date" value="${esc(plan.start)}" ${plan.locked ? 'disabled' : ''} />
     </label>
-    ${plan.locked ? '' : `<button class="rp-link-btn rp-content-start-preset" data-action="set-content-start-next-month" data-date="${nextMonth}">${esc(fmtUz(parseKey(nextMonth)))}dan boshlash</button>`}
-    <p class="rp-note rp-note-small">${plan.locked ? esc(fmtUz(parseKey(plan.lastPlanned))) + 'gacha reja bor — yangi zaxira ' + esc(fmtUz(parseKey(plan.start))) + 'dan hisoblanadi.' : 'Bu sanadan oldingi kontent zaxira hisobiga kirmaydi.'}</p>
+    <button class="rp-link-btn rp-content-start-preset" data-action="set-content-start-next-month" data-date="${nextMonth}">${esc(fmtUz(parseKey(nextMonth)))}dan boshlash</button>
+    <p class="rp-note rp-note-small">Bu sanadan oldingi kontent hisobga kirmaydi. Keyin zaxira faqat bo'sh kunlarga joylashib hisoblanadi.</p>
     <button class="rp-save-btn" data-action="save-content-settings">Saqlash</button>
   </div></div>`;
 }

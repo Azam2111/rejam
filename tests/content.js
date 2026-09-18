@@ -533,12 +533,13 @@ function serve(port){
   check('Sheetdan o\'chgan source:sheet zaxiradan chiqadi', await page.evaluate(() => !state.scripts.some(s => s.text === 'Sheet ketadi')));
   check('Sheetdan o\'chsa ham source:app qoladi', await page.evaluate(() => state.scripts.some(s => s.text === 'App qoladi')));
 
-  // reserveStart real state bilan ishlaydi; aniq 5-oktabr rejasini qo'yib qayta tekshiramiz.
+  // 1–5-oktabrning hammasi band bo'lsa, zaxira 6-oktabrdan boshlanadi.
   const reserveWithPlan = await page.evaluate(() => {
-    state.posts = [{ id:'oct5', title:'Reel', date:'2026-10-05', scriptId:null, matnAt:1, videoAt:null, montajAt:null }];
+    state.contentStartDate = '2026-10-01';
+    state.posts = [1,2,3,4,5].map(n => ({ id:'oct' + n, title:'Reel', date:'2026-10-0' + n, scriptId:null, matnAt:1, videoAt:null, montajAt:null }));
     return scriptReservePlan('2026-10-01', 20, 1);
   });
-  check('5-oktabrgacha reja, 20 zaxira: 6–25 oktabr', reserveWithPlan.start === '2026-10-06' && reserveWithPlan.end === '2026-10-25', JSON.stringify(reserveWithPlan));
+  check('1–5 oktabr band, 20 zaxira: 6–25 oktabr', reserveWithPlan.start === '2026-10-06' && reserveWithPlan.end === '2026-10-25', JSON.stringify(reserveWithPlan));
   const reserveTwo = await page.evaluate(() => scriptReservePlan('2026-10-01', 20, 2));
   check('kuniga 2 ta bo\'lsa sana to\'g\'ri qisqaradi', reserveTwo.start === '2026-10-06' && reserveTwo.end === '2026-10-15', JSON.stringify(reserveTwo));
   const octoberOnly = await page.evaluate(() => {
@@ -546,7 +547,7 @@ function serve(port){
     state.posts = [{ id:'sep', title:'Sentabr', date:'2026-09-25', scriptId:null }, { id:'oct', title:'Oktyabr', date:'2026-10-05', scriptId:null }];
     return scriptReservePlan('2026-09-18', 20, 1);
   });
-  check('oktabr boshlanishi sentabrdagi rejani hisobga olmaydi', octoberOnly.start === '2026-10-06' && octoberOnly.end === '2026-10-25', JSON.stringify(octoberOnly));
+  check('oktabr boshlanishi sentabrni unutib, oradagi bo\'sh kunlarni oladi', octoberOnly.start === '2026-10-01' && octoberOnly.end === '2026-10-21', JSON.stringify(octoberOnly));
 
   group('TAYYOR VIDEO VA BO\'SH KUNLAR');
   await clear();
