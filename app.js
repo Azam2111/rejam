@@ -4025,7 +4025,11 @@ const handlers = {
   'sheet-connect-google': () => {
     const c = window.rejamCloud;
     if (!c || !c.connectSheets) { toast('Google ulanishi mavjud emas'); return; }
-    c.connectSheets().then(ok => { if (!ok) { state.sheetMsg = { bad:true, text:c.error || 'Google ulanmadi' }; render(); } });
+    c.connectSheets().then(ok => {
+      // Cloud xatosi modalning o'zida chiqadi; uni sheetMsgga ham yozsak bitta
+      // muammo ikki qizil kartaga aylanib qoladi.
+      if (!ok && !c.sheetsError) { state.sheetMsg = { bad:true, text:c.error || 'Google ulanmadi' }; render(); }
+    });
   },
   'sheet-push': () => syncAppScriptsToSheet(false),
 

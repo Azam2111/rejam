@@ -92,6 +92,7 @@
       'auth/too-many-requests': "Juda ko'p urinish. Biroz kutib qayta urinib ko'ring",
       'auth/network-request-failed': "Internet yo'q yoki server javob bermadi",
       'auth/operation-not-allowed': "Bu kirish usuli Firebase'da yoqilmagan",
+      'auth/provider-already-linked': "Google bu akkauntga allaqachon ulangan. Ruxsat yangilanmoqda",
       'permission-denied': "Serverda ruxsat yo'q (Firestore qoidalari)",
     };
     if (map[code]) return map[code];
@@ -195,10 +196,14 @@
       await loadSDK();
       const provider = new authMod.GoogleAuthProvider();
       provider.addScope('https://www.googleapis.com/auth/spreadsheets');
+      // Google oldin shu Firebase akkauntiga bog'langan bo'lsa uni ikkinchi marta
+      // link qilish xato beradi. Bunday holda reauth ruxsat tokenini yangilaydi.
+      const hasGoogleProvider = !!(auth.currentUser && (auth.currentUser.providerData || []).some(p => p.providerId === 'google.com'));
       // Mavjud email-parol hisobini almashtirmaymiz: Google'ni unga bog'laymiz.
       // Akkaunt bo'lmasa, Google kirishi yangi Firebase sessiyasini ochadi.
       try { localStorage.setItem('rejam-sheets-oauth-pending', '1'); } catch(e) {}
-      if (auth.currentUser) await authMod.linkWithRedirect(auth.currentUser, provider);
+      if (hasGoogleProvider) await authMod.reauthenticateWithRedirect(auth.currentUser, provider);
+      else if (auth.currentUser) await authMod.linkWithRedirect(auth.currentUser, provider);
       else await authMod.signInWithRedirect(auth, provider);
       return true; // Sahifa Google'ga yo'naltiriladi.
     } catch (e) {
@@ -298,13 +303,28 @@
         await loadSDK();
         if (await finishSheetsRedirect()) await afterAuth();
         else if (sheetsPending) { C.sheetsError = 'Google ruxsati ilovaga qaytmadi. Safari oynasida emas, shu o\'rnatilgan ilovada qayta ulang.'; emit(); }
-      } catch(e) { C.sheetsError = uzErr(e); emit(); }
+      } catch(e) {
+        C.sheetsError = String((e && e.code) || '') === 'auth/provider-already-linked'
+          ? 'Google allaqachon ulangan. “Google orqali yozishni ulash”ni yana bosing — ruxsat yangilanadi.'
+          : uzErr(e);
+        try { localStorage.removeItem('rejam-sheets-oauth-pending'); } catch(x) {}
+        emit();
+      }
       return;
     }
     setStatus('connecting');
     try {
       await loadSDK();
-      const gotSheets = await finishSheetsRedirect();
+      let gotSheets = false;
+      try { gotSheets = await finishSheetsRedirect(); }
+      catch (e) {
+        if (String((e && e.code) || '') === 'auth/provider-already-linked') {
+          try { localStorage.removeItem('rejam-sheets-oauth-pending'); } catch(x) {}
+          C.sheetsError = 'Google allaqachon ulangan. “Google orqali yozishni ulash”ni yana bosing — ruxsat yangilanadi.';
+          sheetsPending = null;
+          emit();
+        } else throw e;
+      }
       if (!gotSheets && sheetsPending) { C.sheetsError = 'Google ruxsati ilovaga qaytmadi. Safari oynasida emas, shu o\'rnatilgan ilovada qayta ulang.'; emit(); }
       const user = await new Promise(res => {
         const un = authMod.onAuthStateChanged(auth, u => { un(); res(u); });
