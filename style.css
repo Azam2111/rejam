@@ -413,6 +413,17 @@ body {
 .rp-check-row input { width:17px; height:17px; margin:0; accent-color:#C08A2E; flex-shrink:0; }
 .rp-check-row i { display:block; margin-top:2px; color:#8A7259; font-size:11.5px; font-style:normal; }
 .rp-batch-fields { display:grid; grid-template-columns:1fr 1fr; gap:9px; }
+.rp-batch-picker-head { display:flex; align-items:center; gap:8px; margin:15px 0 7px; color:#5A4B3A; font-size:12.5px; }
+.rp-batch-picker-head b { font-family:'Fraunces',serif; font-size:14px; }
+.rp-batch-picker-head span { color:#8A7259; }
+.rp-batch-picker-head .rp-link-btn { margin-left:auto; padding:2px 0; font-size:12px; }
+.rp-batch-picker { display:flex; flex-direction:column; gap:7px; max-height:275px; overflow:auto; padding-right:2px; }
+.rp-batch-option { display:grid; grid-template-columns:22px 1fr; gap:8px; width:100%; padding:9px; text-align:left; border:1px solid #EBDFC7; border-radius:10px; background:#FBF8F2; color:#3A2A1C; cursor:pointer; }
+.rp-batch-option > span { width:20px; height:20px; border-radius:50%; background:#EFE4D2; color:#8A7259; display:flex; align-items:center; justify-content:center; font-size:11px; }
+.rp-batch-option > div { font-size:12.5px; line-height:1.4; white-space:pre-wrap; word-break:break-word; }
+.rp-batch-option i { display:block; color:#A08F76; font-size:11px; font-style:normal; margin-bottom:2px; }
+.rp-batch-option-on { border-color:#B88A39; background:#FBEFE0; }
+.rp-batch-option-on > span { background:#C08A2E; color:#fff; }
 .rp-shoot-list { display:flex; flex-direction:column; gap:10px; }
 .rp-shoot-card { padding:13px; border:1px solid #DCCBA9; border-radius:15px; background:#FFFCF6; }
 .rp-shoot-head { display:flex; align-items:baseline; gap:8px; color:#3A2A1C; }
