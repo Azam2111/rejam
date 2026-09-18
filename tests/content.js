@@ -405,6 +405,8 @@ function serve(port){
   check('oddiy havola CSV ga aylanadi', /\/1AbCdEfGhIjKlMnOpQrStUvWxYz012345\/gviz\/tq\?tqx=out:csv$/.test(u), String(u));
   u = await page.evaluate(() => sheetCsvUrl('https://docs.google.com/spreadsheets/d/e/2PACX-1vABCDEF/pubhtml'));
   check('nashr qilingan havola ham o\'qiladi', /\/d\/e\/2PACX-1vABCDEF\/pub\?output=csv$/.test(u), String(u));
+  check('nashr qilingan havola /d/e/pub turida taniladi', await page.evaluate(() => isPublishedSheetUrl('https://docs.google.com/spreadsheets/d/e/2PACX-1vABCDEF/pubhtml?gid=0')) === true);
+  check('oddiy edit havola nashr qilingan deb olinmaydi', await page.evaluate(() => isPublishedSheetUrl('https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit')) === false);
   check('boshqa sayt havolasi rad etiladi',
     await page.evaluate(() => sheetCsvUrl('https://example.com/x.csv')) === null);
   check('bo\'sh havola rad etiladi', await page.evaluate(() => sheetCsvUrl('')) === null);

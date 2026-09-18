@@ -2416,6 +2416,10 @@ function sheetCsvUrl(raw){
   return null;
 }
 
+function isPublishedSheetUrl(raw){
+  return /\/spreadsheets\/d\/e\/[^/]+\/pub(?:html)?(?:[/?#]|$)/.test(String(raw || '').trim());
+}
+
 function sheetIdAndGid(raw){
   const u = String(raw == null ? '' : raw).trim();
   const m = u.match(/\/d\/([A-Za-z0-9_-]{20,})/);
@@ -2482,7 +2486,10 @@ async function fetchSheet(silent){
   }
   state.sheetBusy = false;
   if (err) {
-    state.sheetMsg = { bad: true, text: err + '. Jadvalni "Vebda nashr qilish" qilganingizga ishonch hosil qiling.' };
+    const published = isPublishedSheetUrl(state.sheetUrl);
+    state.sheetMsg = { bad: true, text: published
+      ? 'Nashr qilingan havola ochilmadi. Sheetda “Vebda nashr qilish” oynasida butun jadval nashr qilinganini tekshiring.'
+      : 'Bu oddiy /edit havola. “Vebda nashr qilish”dan chiqqan /d/e/.../pub havolani shu yerga qo‘ying yoki “Google orqali yozishni ulash”ni bosing.' };
     render(); return;
   }
   const parsed = scriptsFromTable(parseTable(text));
@@ -2907,14 +2914,16 @@ function renderScriptBank(yangi){
 function renderSheetModal(){
   const cloud = window.rejamCloud;
   const canWrite = !!(cloud && cloud.sheetsConnected && sheetIdAndGid(state.sheetUrl));
+  const normalLink = !!state.sheetUrl && !isPublishedSheetUrl(state.sheetUrl) && !!sheetIdAndGid(state.sheetUrl);
   return `
     <div class="rp-modal-overlay" data-action="close-sheet">
       <div class="rp-modal rp-modal-tall" data-action="noop">
         <div class="rp-modal-header"><span>Matnlar jadvali</span><button class="rp-icon-btn" data-action="close-sheet">&#10005;</button></div>
-        <p class="rp-note">Ilova jadvalni o'zi o'qishi uchun u <b>vebda nashr qilingan</b> bo'lishi kerak:<br>
+        <p class="rp-note">Google ulanmagan bo'lsa, ilova jadvalni o'qishi uchun u <b>vebda nashr qilingan</b> bo'lishi kerak:<br>
           Sheets → <b>Fayl</b> → <b>Ulashish</b> → <b>Vebda nashr qilish</b> → <b>Nashr qilish</b>.<br>
-          Chiqqan havolani shu yerga qo'ying.</p>
-        <input class="rp-cloud-input" id="f-sheet-url" data-draft="sheeturl" placeholder="https://docs.google.com/spreadsheets/..." value="${esc(state.sheetUrl)}" />
+          Chiqqan <b>/d/e/.../pub</b> havolani shu yerga qo'ying.</p>
+        <input class="rp-cloud-input" id="f-sheet-url" data-draft="sheeturl" placeholder=".../spreadsheets/d/e/.../pub?output=csv" value="${esc(state.sheetUrl)}" />
+        ${normalLink && !canWrite ? `<div class="rp-cloud-err">Hozir oddiy <b>/edit</b> havola turibdi. U faqat Google yozuvi ulanganda ishlaydi; nashr qilingan havola <b>/d/e/.../pub</b> bilan boshlanadi.</div>` : ''}
         ${state.sheetMsg ? `<div class="${state.sheetMsg.bad ? 'rp-cloud-err' : 'rp-cloud-ok'}">${esc(state.sheetMsg.text)}</div>` : ''}
         ${cloud && cloud.sheetsError ? `<div class="rp-cloud-err">Google yozish ulanmagan: ${esc(cloud.sheetsError)}</div>` : ''}
         ${cloud && cloud.sheetsConnected ? `<div class="rp-cloud-ok">Google yozish ulangan${cloud.sheetsEmail ? ': ' + esc(cloud.sheetsEmail) : ''}</div>` : ''}
