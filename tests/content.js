@@ -541,6 +541,12 @@ function serve(port){
   check('5-oktabrgacha reja, 20 zaxira: 6–25 oktabr', reserveWithPlan.start === '2026-10-06' && reserveWithPlan.end === '2026-10-25', JSON.stringify(reserveWithPlan));
   const reserveTwo = await page.evaluate(() => scriptReservePlan('2026-10-01', 20, 2));
   check('kuniga 2 ta bo\'lsa sana to\'g\'ri qisqaradi', reserveTwo.start === '2026-10-06' && reserveTwo.end === '2026-10-15', JSON.stringify(reserveTwo));
+  const octoberOnly = await page.evaluate(() => {
+    state.contentStartDate = '2026-10-01';
+    state.posts = [{ id:'sep', title:'Sentabr', date:'2026-09-25', scriptId:null }, { id:'oct', title:'Oktyabr', date:'2026-10-05', scriptId:null }];
+    return scriptReservePlan('2026-09-18', 20, 1);
+  });
+  check('oktabr boshlanishi sentabrdagi rejani hisobga olmaydi', octoberOnly.start === '2026-10-06' && octoberOnly.end === '2026-10-25', JSON.stringify(octoberOnly));
 
   group('TAYYOR VIDEO VA BO\'SH KUNLAR');
   await clear();

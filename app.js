@@ -2541,9 +2541,13 @@ async function syncAppScriptsToSheet(silent){
 function busyDates(){ return new Set(state.posts.map(p => p.date).filter(Boolean)); }
 
 function reserveStart(todayKey){
-  const lastFuture = state.posts.filter(p => p.date && p.date > todayKey).map(p => p.date).sort().pop();
+  // Foydalanuvchi nashr boshlanishini keyinga qo'ygan bo'lsa (masalan 1-oktabr),
+  // undan oldingi sentabr kartalari zaxira hisobini siljitmasligi kerak.
+  const chosenStart = isValidDateKey(state.contentStartDate) && state.contentStartDate > todayKey
+    ? state.contentStartDate : todayKey;
+  const lastFuture = state.posts.filter(p => p.date && p.date >= chosenStart).map(p => p.date).sort().pop();
   return lastFuture ? { date: toKey(addDays(parseKey(lastFuture), 1)), locked: true, last: lastFuture }
-    : { date: isValidDateKey(state.contentStartDate) ? state.contentStartDate : todayKey, locked: false, last: null };
+    : { date: chosenStart, locked: false, last: null };
 }
 
 // Avto-taqsimlash zaxira hisobidan boshqa qoida bilan yuradi: foydalanuvchi
@@ -2992,6 +2996,7 @@ function renderFuturePosts(posts, todayKey){
 function renderContentSettingsModal(){
   const todayKey = toKey(new Date());
   const plan = scriptReservePlan(todayKey, availableScripts().length, state.contentPerDay);
+  const nextMonth = shiftMonthKey(todayKey.slice(0, 7) + '-01', 1);
   return `<div class="rp-modal-overlay" data-action="close-content-settings"><div class="rp-modal" data-action="noop">
     <div class="rp-modal-header"><span>Hisob sozlamasi</span><button class="rp-icon-btn" data-action="close-content-settings">&#10005;</button></div>
     <label class="rp-field"><span>Kuniga nechta Reel</span>
@@ -3000,7 +3005,8 @@ function renderContentSettingsModal(){
     <label class="rp-field"><span>Boshlanish sanasi</span>
       <input id="f-content-start" type="date" value="${esc(plan.start)}" ${plan.locked ? 'disabled' : ''} />
     </label>
-    <p class="rp-note rp-note-small">${plan.locked ? esc(fmtUz(parseKey(plan.lastPlanned))) + 'gacha rejalangan kontent bor — boshlanish sanasi avtomatik.' : 'Kelajakda rejalangan Reel bo\'lmasa, hisob shu sanadan boshlanadi.'}</p>
+    <button class="rp-link-btn rp-content-start-preset" data-action="set-content-start-next-month" data-date="${nextMonth}">${esc(fmtUz(parseKey(nextMonth)))}dan boshlash</button>
+    <p class="rp-note rp-note-small">${plan.locked ? esc(fmtUz(parseKey(plan.lastPlanned))) + 'gacha rejalangan kontent bor — boshlanish sanasi avtomatik.' : 'Bu sanadan oldingi kontent zaxira hisobiga kirmaydi.'}</p>
     <button class="rp-save-btn" data-action="save-content-settings">Saqlash</button>
   </div></div>`;
 }
@@ -4060,6 +4066,10 @@ const handlers = {
     state.contentPerDay = Math.max(1, Math.min(10, Math.floor(Number(per && per.value) || 1)));
     if (!reserveStart(toKey(new Date())).locked) state.contentStartDate = isValidDateKey(start && start.value) ? start.value : '';
     state.showContentSettings = false; commit(); render();
+  },
+  'set-content-start-next-month': (btn) => {
+    state.contentStartDate = btn.dataset.date;
+    commit(); render();
   },
 
   'open-reel-import': () => { state.showReelImport = true; state.reelPreview = null; state.reelRaw = ''; render(); },
