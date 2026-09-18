@@ -2999,19 +2999,38 @@ function copyScriptText(id){
   const sc = state.scripts.find(x => x.id === id);
   if (!sc) return;
   const done = () => toast('Matn nusxa olindi');
+  // iOS Safari/PWA clipboard Promise'i ba'zan ruxsatni kech rad etadi. O'sha
+  // paytda user gesture yo'qolib, fallback ham ishlamay qoladi. Eski copy
+  // usulini avval, aynan tugma bosilgan event ichida sinaymiz.
+  if (fallbackCopy(sc.text)) { done(); return; }
   if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(sc.text).then(done).catch(() => fallbackCopy(sc.text, done));
-  } else fallbackCopy(sc.text, done);
+    navigator.clipboard.writeText(sc.text).then(done).catch(() => {
+      toast('Nusxa olib bo\'lmadi — matnni bosib ushlab belgilang');
+    });
+  } else toast('Nusxa olib bo\'lmadi — matnni bosib ushlab belgilang');
 }
 
-function fallbackCopy(text, done){
+function fallbackCopy(text){
+  const active = document.activeElement;
+  const sx = window.scrollX, sy = window.scrollY;
   const area = document.createElement('textarea');
-  area.value = text; area.setAttribute('readonly', '');
-  area.style.cssText = 'position:fixed;opacity:0;pointer-events:none';
-  document.body.appendChild(area); area.select();
-  try { document.execCommand('copy'); done(); }
-  catch (e) { toast('Nusxa olib bo\'lmadi — matnni bosib ushlab belgilang'); }
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.setAttribute('aria-hidden', 'true');
+  // display:none/opacity:0 iOS'da selectionni bekor qilishi mumkin.
+  area.style.cssText = 'position:fixed;top:0;left:-9999px;width:1px;height:1px;font-size:16px;pointer-events:none';
+  document.body.appendChild(area);
+  let copied = false;
+  try {
+    try { area.focus({ preventScroll:true }); } catch (e) { area.focus(); }
+    area.select();
+    area.setSelectionRange(0, area.value.length);
+    copied = document.execCommand('copy') === true;
+  } catch (e) { copied = false; }
   document.body.removeChild(area);
+  try { if (active && active.focus) active.focus({ preventScroll:true }); } catch (e) {}
+  try { window.scrollTo(sx, sy); } catch (e) {}
+  return copied;
 }
 
 function renderContentTab(today){

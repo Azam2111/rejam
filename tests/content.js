@@ -615,6 +615,10 @@ function serve(port){
   await page.evaluate(() => { state.tab = 'kontent'; state.showLibrary = true; render(); });
   await page.waitForTimeout(120);
   check('kutubxonada nusxa olish tugmasi bor', await page.evaluate(() => /Nusxa olish/.test(document.body.innerText)));
+  check('iPhone fallback copy natijasini tekshiradi', await page.evaluate(() => {
+    const src = fallbackCopy.toString();
+    return /setSelectionRange/.test(src) && /execCommand\('copy'\) === true/.test(src) && /return copied/.test(src);
+  }));
   await page.evaluate(() => { state.showLibrary = false; state.posts = [
     { id:'m1', title:'Oktyabr', date:'2026-10-01', scriptId:null, matnAt:1, videoAt:null, montajAt:null },
     { id:'m2', title:'Noyabr', date:'2026-11-01', scriptId:null, matnAt:1, videoAt:null, montajAt:null },
