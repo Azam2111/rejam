@@ -635,6 +635,25 @@ function serve(port){
   check("faqat olingan 4 video sochib joylanadi", shoot.scheduled === 4 && JSON.stringify(shoot.dates) === JSON.stringify(['2026-10-01','2026-10-06','2026-10-11','2026-10-16']), JSON.stringify(shoot));
   check("olinmagan beshinchi matn zaxirada qoladi va kod postda bor", shoot.used === 4 && shoot.available === 1 && shoot.refs.every(r => /^SY-/.test(r)), JSON.stringify(shoot));
 
+  const plannedShoot = await page.evaluate(() => {
+    state.shootBatches = []; state.usedScripts = [];
+    state.scripts = Array.from({length:9}, (_,i) => ({ id:'plan-sc-'+i, text:'Rejadagi matn '+(i+1), tag:'', source:'app', createdAt:i+1 }));
+    state.posts = Array.from({length:9}, (_,i) => ({
+      id:'plan-post-'+i, title:'Rejadagi matn '+(i+1), date:'2026-10-'+String(i+1).padStart(2,'0'), scriptId:'plan-sc-'+i,
+      note:'', createdAt:1, editedAt:1, matnAt:1, videoAt:null, montajAt:null
+    }));
+    const picked = autoPlannedShootPosts(3, 'Oq futbolka', 'Ofis', '2026-09-18');
+    const batch = createPlannedShootBatch({ count:3, outfit:'Oq futbolka', location:'Ofis' });
+    toggleBatchShot(batch.id, batch.postIds[0]); toggleBatchShot(batch.id, batch.postIds[2]);
+    const beforeDates = state.posts.map(p => p.date).join(',');
+    const done = finalizeShootBatch(batch.id);
+    return { picked:picked.map(p => p.date), batchDates:batch.postIds.map(id => state.posts.find(p => p.id === id).date), beforeDates,
+      afterDates:state.posts.map(p => p.date).join(','), done, total:state.posts.length,
+      filmed:state.posts.filter(p => p.videoAt).length, tagged:state.posts.filter(p => p.outfit === 'Oq futbolka').length };
+  });
+  check('syomka matnlari rejaning turli joylaridan avtomatik olinadi', JSON.stringify(plannedShoot.picked) === JSON.stringify(['2026-10-01','2026-10-05','2026-10-09']), JSON.stringify(plannedShoot));
+  check('video olinganda chiqish sanalari o\'zgarmaydi', plannedShoot.done === 2 && plannedShoot.total === 9 && plannedShoot.beforeDates === plannedShoot.afterDates && plannedShoot.filmed === 2 && plannedShoot.tagged === 2, JSON.stringify(plannedShoot));
+
   const meta = await page.evaluate(() => {
     state.posts = [{ id:'oldmeta', title:'Eski oq video', date:'2026-10-01', scriptId:null, note:'', outfit:'Oq futbolka', location:'Ofis', createdAt:1, editedAt:1, matnAt:1, videoAt:1, montajAt:null }];
     state.shootBatches = [{ id:'oldbatch', code:'SY-OLD-01', label:'Eski', outfit:'  oq   futbolka ', location:'OFIS', scriptIds:['shoot1'], shotIds:['shoot1'], gapDays:5, startDate:'2026-10-01', status:'scheduled', scheduledPostIds:['oldmeta'], createdAt:1 }];

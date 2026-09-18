@@ -432,6 +432,7 @@ body {
 .rp-batch-option i { display:block; color:#A08F76; font-size:11px; font-style:normal; margin-bottom:2px; }
 .rp-batch-option-on { border-color:#B88A39; background:#FBEFE0; }
 .rp-batch-option-on > span { background:#C08A2E; color:#fff; }
+.rp-batch-option:not(button) { cursor:default; }
 .rp-shoot-list { display:flex; flex-direction:column; gap:10px; }
 .rp-shoot-card { padding:13px; border:1px solid #DCCBA9; border-radius:15px; background:#FFFCF6; }
 .rp-shoot-head { display:flex; align-items:baseline; gap:8px; color:#3A2A1C; }
@@ -442,6 +443,7 @@ body {
 .rp-shoot-script { display:grid; grid-template-columns:20px 1fr; gap:7px; padding:9px; border:1px solid #EBDFC7; border-radius:10px; background:#FBF8F2; }
 .rp-shoot-script > span { width:20px; height:20px; border-radius:50%; background:#EFE4D2; color:#8A7259; display:flex; align-items:center; justify-content:center; font-size:11px; }
 .rp-shoot-script > div { grid-column:2; color:#3A2A1C; font-size:12.5px; line-height:1.42; white-space:pre-wrap; word-break:break-word; max-height:92px; overflow:auto; }
+.rp-shoot-date { grid-column:2; width:max-content; padding:2px 6px; border-radius:7px; background:#FBEFE0; color:#8A6420; font-family:'Fraunces',serif; font-size:11px; }
 .rp-shoot-script .rp-link-btn { grid-column:auto; padding:2px 0; text-align:left; font-size:12px; }
 .rp-shoot-script-done { border-color:#B9D1AE; background:#EEF5E9; }
 .rp-shoot-script-done > span { background:#5F8C55; color:#fff; }

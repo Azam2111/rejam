@@ -2178,15 +2178,17 @@ function validateShootBatch(raw, seen, issues){
   if (!id || !/^[A-Z0-9_-]{3,24}$/.test(code)) return null;
   const selected = Array.isArray(raw.scriptIds) ? raw.scriptIds.map(String).filter(x => ID_RE.test(x)) : [];
   const scriptIds = Array.from(new Set(selected)).slice(0, 20);
-  if (!scriptIds.length) return null;
+  const selectedPosts = Array.isArray(raw.postIds) ? raw.postIds.map(String).filter(x => ID_RE.test(x)) : [];
+  const postIds = Array.from(new Set(selectedPosts)).slice(0, 20);
+  if (!scriptIds.length && !postIds.length) return null;
   const shot = new Set((Array.isArray(raw.shotIds) ? raw.shotIds : []).map(String));
-  const shotIds = scriptIds.filter(id2 => shot.has(id2));
+  const shotIds = scriptIds.concat(postIds).filter(id2 => shot.has(id2));
   return {
     id, code,
     label: cleanText(raw.label, 80).trim() || "S'yomka sessiyasi",
     outfit: cleanText(raw.outfit, 60).trim(),
     location: cleanText(raw.location, 60).trim(),
-    scriptIds, shotIds,
+    scriptIds, postIds, shotIds,
     gapDays: Math.max(3, Math.min(30, Math.floor(Number(raw.gapDays) || 5))),
     startDate: isValidDateKey(raw.startDate) ? raw.startDate : toKey(new Date()),
     status: raw.status === 'scheduled' ? 'scheduled' : 'shooting',
@@ -2733,8 +2735,8 @@ function confirmScriptImport(){
 }
 
 // ---------- S'yomka sessiyasi ----------
-// Bir kiyim/lokatsiyada olingan videolar avval band qilinadi. Faqat foydalanuvchi
-// "olindi" deb tasdiqlagach, ular jadvalga sochiladi; qolgan matnlar zaxirada qoladi.
+// Bir kiyim/lokatsiyada olinadigan videolar rejaning turli sanalaridan tanlanadi.
+// Faqat foydalanuvchi "olindi" deb tasdiqlagach video bosqichi yoqiladi; sana o'zgarmaydi.
 function reservedScriptIds(){
   const ids = new Set();
   for (const b of state.shootBatches) if (b.status === 'shooting') for (const id of (b.scriptIds || [])) ids.add(id);
@@ -2745,7 +2747,49 @@ function availableScripts(){
   const assigned = assignedScriptIds();
   return unusedScripts().filter(sc => !assigned.has(sc.id) && !isScriptReserved(sc.id));
 }
-function shootingCount(){ return reservedScriptIds().size; }
+function reservedShootPostIds(){
+  const ids = new Set();
+  for (const b of state.shootBatches) if (b.status === 'shooting') for (const id of (b.postIds || [])) ids.add(id);
+  return ids;
+}
+function shootingCount(){
+  let count = 0;
+  for (const b of state.shootBatches) if (b.status === 'shooting') count += (b.postIds && b.postIds.length) || (b.scriptIds || []).length;
+  return count;
+}
+function plannedShootPool(todayKey){
+  const reserved = reservedShootPostIds();
+  const scripts = new Set(state.scripts.map(sc => sc.id));
+  return postsSorted().filter(p => p.date && p.date >= todayKey && p.scriptId && scripts.has(p.scriptId) && p.matnAt && !p.videoAt && !reserved.has(p.id));
+}
+
+// Rejaning boshidan ketma-ket N ta emas, butun mavjud davrdan tengroq nuqtalar
+// olinadi. Reja zich bo'lsa oraliq qisqaradi, uzoqqa cho'zilgan bo'lsa kattalashadi.
+function autoPlannedShootPosts(count, outfit, location, todayKey){
+  const raw = plannedShootPool(todayKey || toKey(new Date()));
+  const compatible = raw.filter(p => !shootMetaClash(p.date, outfit, location, 3, []));
+  const list = compatible.length ? compatible : raw;
+  const n = Math.max(0, Math.min(list.length, Math.floor(Number(count) || 0)));
+  if (!n) return [];
+  if (n === 1) return [list[0]];
+  if (n >= list.length) return list;
+  const out = [], used = new Set();
+  for (let i = 0; i < n; i++) {
+    let idx = Math.round(i * (list.length - 1) / (n - 1));
+    while (used.has(idx) && idx + 1 < list.length) idx++;
+    if (used.has(idx)) { idx = 0; while (used.has(idx)) idx++; }
+    used.add(idx); out.push(list[idx]);
+  }
+  return out.sort((a,b) => a.date.localeCompare(b.date));
+}
+
+function shootDateSpread(posts){
+  if (!posts || posts.length < 2) return '';
+  const gaps = [];
+  for (let i = 1; i < posts.length; i++) gaps.push(daysBetween(parseKey(posts[i - 1].date), parseKey(posts[i].date)));
+  const min = Math.min(...gaps), max = Math.max(...gaps);
+  return min === max ? min + ' kun atrofida' : min + '–' + max + ' kun oralig\'ida';
+}
 function makeBatchCode(){
   const day = toKey(new Date()).replace(/-/g, '').slice(2);
   const prefix = 'SY-' + day + '-';
@@ -2835,6 +2879,22 @@ function createShootBatch(draft){
   };
   state.shootBatches = state.shootBatches.concat([b]); commit(); return b;
 }
+
+function createPlannedShootBatch(draft){
+  const outfit = canonicalShootMeta('outfit', draft.outfit);
+  const location = canonicalShootMeta('location', draft.location);
+  const posts = autoPlannedShootPosts(draft.count, outfit, location, toKey(new Date()));
+  if (!posts.length) return null;
+  const now = Date.now();
+  const b = {
+    id:uid(), code:makeBatchCode(),
+    label:String(draft.label || '').trim() || 'S\'yomka sessiyasi',
+    outfit, location,
+    postIds:posts.map(p => p.id), scriptIds:posts.map(p => p.scriptId), shotIds:[],
+    gapDays:5, startDate:posts[0].date, status:'shooting', scheduledPostIds:posts.map(p => p.id), createdAt:now,
+  };
+  state.shootBatches = state.shootBatches.concat([b]); commit(); return b;
+}
 function toggleBatchShot(batchId, scriptId){
   state.shootBatches = state.shootBatches.map(b => {
     if (b.id !== batchId || b.status !== 'shooting') return b;
@@ -2846,6 +2906,25 @@ function toggleBatchShot(batchId, scriptId){
 function finalizeShootBatch(batchId){
   const b = state.shootBatches.find(x => x.id === batchId && x.status === 'shooting');
   if (!b || !b.shotIds.length) return 0;
+  if (b.postIds && b.postIds.length) {
+    const shot = new Set(b.shotIds), now = Date.now();
+    const changed = [];
+    state.posts = state.posts.map(p => {
+      if (!shot.has(p.id) || !b.postIds.includes(p.id)) return p;
+      changed.push(p);
+      const note = (b.outfit ? 'Kiyim: ' + b.outfit : '') + (b.location ? (b.outfit ? ' · ' : '') + 'Lokatsiya: ' + b.location : '');
+      return Object.assign({}, p, {
+        ref:p.ref || b.code + '-' + String(changed.length).padStart(2, '0'),
+        note:note || p.note, outfit:b.outfit, location:b.location,
+        matnAt:p.matnAt || now, videoAt:p.videoAt || now, editedAt:now,
+      });
+    });
+    state.usedScripts = Array.from(new Set(state.usedScripts.concat(changed.map(p => p.scriptId).filter(Boolean))));
+    state.shootBatches = state.shootBatches.map(x => x.id === b.id ? Object.assign({}, x, { status:'scheduled', scheduledPostIds:changed.map(p => p.id) }) : x);
+    commit(); render();
+    toast(changed.length + ' ta video olindi — rejalangan sanalari o\'zgarmadi');
+    return changed.length;
+  }
   const scripts = b.shotIds.map(id => state.scripts.find(sc => sc.id === id)).filter(Boolean);
   const dates = scatterFreeDates(scripts.length, parseKey(b.startDate), b.gapDays, { outfit:b.outfit, location:b.location });
   const now = Date.now();
@@ -2867,7 +2946,7 @@ function cancelShootBatch(batchId){
   const b = state.shootBatches.find(x => x.id === batchId && x.status === 'shooting');
   if (!b) return;
   state.shootBatches = state.shootBatches.filter(x => x.id !== batchId); commit(); render();
-  toast('Sessiya bekor qilindi — matnlar zaxirada qoldi');
+  toast(b.postIds && b.postIds.length ? 'Sessiya bekor qilindi — reja o\'zgarmadi' : 'Sessiya bekor qilindi — matnlar zaxirada qoldi');
 }
 
 function scriptToPost(id){
@@ -3043,7 +3122,7 @@ function renderScriptBank(yangi){
         ${yangi ? `<button class="rp-bank-btn rp-bank-btn2" data-action="open-split">Kunlarga bo'l</button>` : ''}
       </div>
       <button class="rp-link-btn rp-bank-link" data-action="open-content-settings">Hisob sozlamasi</button>
-      ${yangi ? `<button class="rp-link-btn rp-bank-link" data-action="open-shoot-batch">S'yomka uchun ${Math.min(5, yangi)} ta matn tanlash</button>` : ''}
+      ${planned ? `<button class="rp-link-btn rp-bank-link" data-action="open-shoot-batch">S'yomka uchun matn olish</button>` : ''}
       ${shootingCount() ? `<div class="rp-bank-msg">${shootingCount()} ta matn s'yomka sessiyasida band</div>` : ''}
       ${planned ? `<div class="rp-bank-msg">${planned} ta matn kunga qo'yilgan &middot; hali video olinmagan</div>` : ''}
       ${state.sheetMsg ? `<div class="rp-bank-msg${state.sheetMsg.bad ? ' rp-bank-msg-bad' : ''}">${esc(state.sheetMsg.text)}</div>` : ''}
@@ -3107,13 +3186,16 @@ function renderShootBatches(){
   return `<div class="rp-sec-label">S'yomka sessiyalari <i>${batches.length}</i></div><div class="rp-shoot-list">
     ${batches.map(b => {
       const shot = new Set(b.shotIds);
+      const planned = !!(b.postIds && b.postIds.length);
+      const items = planned
+        ? b.postIds.map(id => { const post = state.posts.find(p => p.id === id); return post && { id, post, sc:state.scripts.find(sc => sc.id === post.scriptId) }; }).filter(Boolean)
+        : b.scriptIds.map(id => ({ id, post:null, sc:state.scripts.find(sc => sc.id === id) })).filter(x => x.sc);
       return `<div class="rp-shoot-card">
         <div class="rp-shoot-head"><b>${esc(b.code)}</b><span>${esc(b.label)}</span></div>
-        <div class="rp-shoot-meta">${b.outfit ? 'Kiyim: ' + esc(b.outfit) : 'Kiyim ko\'rsatilmagan'}${b.location ? ' · Lokatsiya: ' + esc(b.location) : ''}<br>${b.scriptIds.length} ta matn · ${shot.size} ta olindi · ${b.gapDays} kun oralatib</div>
-        <div class="rp-shoot-scripts">${b.scriptIds.map((id, i) => {
-          const sc = state.scripts.find(x => x.id === id); if (!sc) return '';
-          const done = shot.has(id);
-          return `<div class="rp-shoot-script${done ? ' rp-shoot-script-done' : ''}"><span>${i + 1}</span><div>${esc(sc.text)}</div><button class="rp-link-btn" data-action="copy-script" data-id="${esc(id)}">Nusxa</button><button class="rp-link-btn" data-action="toggle-batch-shot" data-batch="${esc(b.id)}" data-id="${esc(id)}">${done ? '✓ Olindi' : 'Olindi deb belgilash'}</button></div>`;
+        <div class="rp-shoot-meta">${b.outfit ? 'Kiyim: ' + esc(b.outfit) : 'Kiyim ko\'rsatilmagan'}${b.location ? ' · Lokatsiya: ' + esc(b.location) : ''}<br>${items.length} ta matn · ${shot.size} ta olindi · ${planned ? 'chiqish sanalari saqlanadi' : b.gapDays + ' kun oralatib'}</div>
+        <div class="rp-shoot-scripts">${items.map((item, i) => {
+          const done = shot.has(item.id), sc = item.sc;
+          return `<div class="rp-shoot-script${done ? ' rp-shoot-script-done' : ''}"><span>${i + 1}</span>${item.post ? `<b class="rp-shoot-date">${esc(fmtUz(parseKey(item.post.date)))}</b>` : ''}<div>${esc(sc ? sc.text : item.post.title)}</div>${sc ? `<button class="rp-link-btn" data-action="copy-script" data-id="${esc(sc.id)}">Nusxa</button>` : ''}<button class="rp-link-btn" data-action="toggle-batch-shot" data-batch="${esc(b.id)}" data-id="${esc(item.id)}">${done ? '✓ Olindi' : 'Olindi deb belgilash'}</button></div>`;
         }).join('')}</div>
         <div class="rp-shoot-actions"><button class="rp-save-btn" data-action="finalize-batch" data-id="${esc(b.id)}"${shot.size ? '' : ' disabled'}>${shot.size ? shot.size + ' tasini sochib joylash' : 'Avval olinganlarini belgilang'}</button><button class="rp-link-btn" data-action="cancel-batch" data-id="${esc(b.id)}">Bekor qilish</button></div>
       </div>`;
@@ -3297,25 +3379,24 @@ function renderReadyDaysModal(){
 
 function renderShootBatchModal(today){
   const d = state.shootBatchDraft || {};
-  const scripts = availableScripts();
-  const available = scripts.length;
-  const selected = new Set((d.scriptIds || []).filter(id => scripts.some(sc => sc.id === id)));
-  const start = isValidDateKey(d.startDate) ? d.startDate : splitStart(toKey(today));
+  const pool = plannedShootPool(toKey(today));
+  const count = Math.max(1, Math.min(pool.length || 1, Math.floor(Number(d.count) || Math.min(5, pool.length || 1))));
   const outfits = shootMetaOptions('outfit').slice(0, 8);
   const locations = shootMetaOptions('location').slice(0, 8);
+  const picks = autoPlannedShootPosts(count, d.outfit || '', d.location || '', toKey(today));
+  const spread = shootDateSpread(picks);
   const metaChoices = (field, values) => values.length ? `<div class="rp-meta-choices"><span>Avval ishlatilgan:</span>${values.map(value => `<button type="button" data-action="set-shoot-meta" data-field="${field}" data-value="${esc(value)}">${esc(value)}</button>`).join('')}</div>` : '';
   return `<div class="rp-modal-overlay" data-action="close-shoot-batch"><div class="rp-modal rp-modal-tall" data-action="noop">
     <div class="rp-modal-header"><span>S'yomka sessiyasi</span><button class="rp-icon-btn" data-action="close-shoot-batch">&#10005;</button></div>
-    <p class="rp-note">S'yomka uchun kerakli matnlarni o'zingiz belgilang. Faqat siz olindi deb belgilagan videolar keyin jadvalga sochiladi.</p>
+    <p class="rp-note">Nechta video olishingizni ayting. App rejalangan, hali olinmagan matnlarni butun zaxira bo'ylab turli sanalardan tanlaydi.</p>
     <label class="rp-field"><span>Sessiya nomi</span><input id="f-batch-label" data-draft="shootbatch" data-field="label" value="${esc(d.label || '')}" placeholder="Masalan: Qora kostyum — ofis" maxlength="80" /></label>
     <div class="rp-batch-fields"><div><label class="rp-field"><span>Kiyim <i>ixtiyoriy</i></span><input id="f-batch-outfit" data-draft="shootbatch" data-field="outfit" list="rp-outfit-options" value="${esc(d.outfit || '')}" placeholder="Oq futbolka" maxlength="60" /></label>${metaChoices('outfit', outfits)}</div><div><label class="rp-field"><span>Lokatsiya <i>ixtiyoriy</i></span><input id="f-batch-location" data-draft="shootbatch" data-field="location" list="rp-location-options" value="${esc(d.location || '')}" placeholder="Ofis" maxlength="60" /></label>${metaChoices('location', locations)}</div></div>
     <datalist id="rp-outfit-options">${outfits.map(x => `<option value="${esc(x)}"></option>`).join('')}</datalist><datalist id="rp-location-options">${locations.map(x => `<option value="${esc(x)}"></option>`).join('')}</datalist>
-    <div class="rp-batch-picker-head"><b>Matnlarni tanlang</b><span>${selected.size} ta belgilandi</span><button class="rp-link-btn" data-action="toggle-all-batch-scripts">${selected.size === available && available ? 'Tozalash' : 'Hammasini tanlash'}</button></div>
-    <div class="rp-batch-picker">${scripts.length ? scripts.map((sc, i) => `<button class="rp-batch-option${selected.has(sc.id) ? ' rp-batch-option-on' : ''}" data-action="toggle-batch-script" data-id="${esc(sc.id)}"><span>${selected.has(sc.id) ? '✓' : i + 1}</span><div>${sc.tag ? `<i>${esc(sc.tag)}</i>` : ''}${esc(sc.text)}</div></button>`).join('') : '<div class="rp-empty">Bo\'sh matn qolmadi</div>'}</div>
-    <label class="rp-field"><span>Videolar oralig'i</span><select id="f-batch-gap" data-draft="shootbatch" data-field="gapDays">${[4,5,7,10,14].map(n => `<option value="${n}"${Number(d.gapDays || 5) === n ? ' selected' : ''}>${n} kun</option>`).join('')}</select></label>
-    <label class="rp-field"><span>Jadval qaysi sanadan boshlansin</span><input id="f-batch-start" data-draft="shootbatch" data-field="startDate" type="date" value="${esc(start)}" /></label>
-    <div class="rp-import-box"><div class="rp-import-row"><span>Hozir bo'sh matn</span><b>${available} ta</b></div><div class="rp-import-msg">Bir xil kiyim yoki lokatsiya tanlansa, app ularni kamida tanlangan oraliqcha uzoqlashtiradi. Bu ma'lumotni Sheetga yozish shart emas.</div></div>
-    <button class="rp-save-btn" data-action="create-shoot-batch"${selected.size ? '' : ' disabled'}>${selected.size ? selected.size + ' ta matnni sessiyaga olish' : 'Avval matn tanlang'}</button>
+    <label class="rp-field"><span>Nechta video olasiz</span><select id="f-batch-count" data-draft="shootbatch" data-field="count">${Array.from({length:Math.min(12, Math.max(1, pool.length))}, (_,i) => i + 1).map(n => `<option value="${n}"${count === n ? ' selected' : ''}>${n} ta</option>`).join('')}</select></label>
+    <div class="rp-batch-picker-head"><b>App tanlagan matnlar</b><span>${picks.length} ta · ${esc(spread || 'bitta sana')}</span></div>
+    <div class="rp-batch-picker">${picks.length ? picks.map((post, i) => { const sc = state.scripts.find(x => x.id === post.scriptId); return `<div class="rp-batch-option rp-batch-option-on"><span>${i + 1}</span><div><i>${esc(fmtUz(parseKey(post.date)))}da chiqadi</i>${esc(sc ? sc.text : post.title)}</div></div>`; }).join('') : '<div class="rp-empty">Avval matnlarni “Kunlarga bo\'l” orqali rejalashtiring</div>'}</div>
+    <div class="rp-import-box"><div class="rp-import-row"><span>Rejada olinmagan matn</span><b>${pool.length} ta</b></div><div class="rp-import-msg">Oraliq qattiq belgilanmaydi: mavjud reja qisqa bo'lsa yaqinroq, uzoq bo'lsa kengroq sanalar tanlanadi. Video olingach chiqish sanasi o'zgarmaydi.</div></div>
+    <button class="rp-save-btn" data-action="create-shoot-batch"${picks.length ? '' : ' disabled'}>${picks.length ? picks.length + ' ta matnni sessiyaga olish' : 'Rejalangan matn yo\'q'}</button>
   </div></div>`;
 }
 
@@ -4214,16 +4295,16 @@ const handlers = {
   'sheet-push': () => syncAppScriptsToSheet(false),
 
   'open-shoot-batch': () => {
-    const open = () => { state.shootBatchDraft = { scriptIds:[], gapDays:5, startDate:splitStart(toKey(new Date())) }; state.showShootBatch = true; render(); };
+    const open = () => { state.shootBatchDraft = { count:Math.min(5, plannedShootPool(toKey(new Date())).length || 1) }; state.showShootBatch = true; render(); };
     if (sheetCsvUrl(state.sheetUrl)) fetchSheet(true).then(open); else open();
   },
   'close-shoot-batch': () => { state.showShootBatch = false; state.shootBatchDraft = null; render(); },
   'create-shoot-batch': () => {
     const read = id => (document.getElementById(id) || {}).value || '';
-    const batch = createShootBatch({ label:read('f-batch-label'), outfit:read('f-batch-outfit'), location:read('f-batch-location'), scriptIds:(state.shootBatchDraft || {}).scriptIds || [], gapDays:read('f-batch-gap'), startDate:read('f-batch-start') });
-    if (!batch) { toast('Avval s\'yomka uchun matnlarni belgilang'); return; }
+    const batch = createPlannedShootBatch({ label:read('f-batch-label'), outfit:read('f-batch-outfit'), location:read('f-batch-location'), count:read('f-batch-count') });
+    if (!batch) { toast('Avval matnlarni kunlarga rejalashtiring'); return; }
     state.showShootBatch = false; state.shootBatchDraft = null; render();
-    toast(batch.scriptIds.length + ' ta matn ' + batch.code + ' sessiyasiga olindi');
+    toast(batch.postIds.length + ' ta turli sanadagi matn sessiyaga olindi');
   },
   'toggle-batch-script': (btn) => {
     const draft = state.shootBatchDraft || {};
@@ -4376,7 +4457,10 @@ document.addEventListener('input', (e) => {
   else if (el.dataset && el.dataset.draft === 'appscript') state.appScriptDraft = el.value;
   else if (el.dataset && el.dataset.draft === 'plan') planDraft[el.dataset.field] = el.value;
   else if (el.dataset && el.dataset.draft === 'task') taskDraft[el.dataset.field] = el.value;
-  else if (el.dataset && el.dataset.draft === 'shootbatch') state.shootBatchDraft = Object.assign({}, state.shootBatchDraft || {}, { [el.dataset.field]:el.value });
+  else if (el.dataset && el.dataset.draft === 'shootbatch') {
+    state.shootBatchDraft = Object.assign({}, state.shootBatchDraft || {}, { [el.dataset.field]:el.value });
+    if (el.dataset.field === 'count') render();
+  }
   else if (el.id === 'f-report-date') { state.reportDate = el.value; render(); }
   else if (el.dataset && el.dataset.draft === 'sheeturl') { state.sheetUrl = el.value; }
   else if (el.dataset && el.dataset.draft === 'split') { state.splitCount = el.value; render(); }
