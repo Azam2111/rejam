@@ -42,7 +42,7 @@ function serve(port){
   };
   const clear = () => page.evaluate(async () => {
     state.plans = []; state.tasks = []; state.ideas = [];
-    state.posts = []; state.scripts = []; state.usedScripts = [];
+    state.posts = []; state.scripts = []; state.usedScripts = []; state.shootBatches = [];
     state.importMode = 'auto'; state.importRaw = ''; state.scriptPreview = null;
     await commit();
   });
@@ -589,6 +589,20 @@ function serve(port){
     { id:'m2', title:'Noyabr', date:'2026-11-01', scriptId:null, matnAt:1, videoAt:null, montajAt:null },
   ]; render(); });
   check('kelajak rejalari oylar bo\'yicha ajraladi', await page.evaluate(() => /Oktyabr 2026/.test(document.body.innerText) && /Noyabr 2026/.test(document.body.innerText)));
+
+  group("S'YOMKA SESSIYASI VA SOCHISH");
+  await clear();
+  const shoot = await page.evaluate(() => {
+    state.scripts = [1,2,3,4,5].map(n => ({ id:'shoot'+n, text:'S\'yomka matni '+n, tag:'', source:'sheet', createdAt:n }));
+    const batch = createShootBatch({ label:'Qora kostyum', outfit:'Qora', location:'Ofis', count:5, gapDays:5, startDate:'2026-10-01' });
+    const before = { reserved:shootingCount(), available:availableScripts().length, code:batch && batch.code };
+    batch.scriptIds.slice(0, 4).forEach(id => toggleBatchShot(batch.id, id));
+    const scheduled = finalizeShootBatch(batch.id);
+    return { before, scheduled, dates:state.posts.map(p => p.date).sort(), used:state.usedScripts.length, available:availableScripts().length, refs:state.posts.map(p => p.ref) };
+  });
+  check("5 ta matn sessiyada band qilinadi", shoot.before.reserved === 5 && shoot.before.available === 0 && /^SY-/.test(shoot.before.code), JSON.stringify(shoot));
+  check("faqat olingan 4 video sochib joylanadi", shoot.scheduled === 4 && JSON.stringify(shoot.dates) === JSON.stringify(['2026-10-01','2026-10-06','2026-10-11','2026-10-16']), JSON.stringify(shoot));
+  check("olinmagan beshinchi matn zaxirada qoladi va kod postda bor", shoot.used === 4 && shoot.available === 1 && shoot.refs.every(r => /^SY-/.test(r)), JSON.stringify(shoot));
 
   check('konsolda xato yo\'q', errors.length === 0, errors.join(' | '));
 
