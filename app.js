@@ -2549,6 +2549,17 @@ async function fetchSheet(silent){
   if (!silent && fresh.length) toast(fresh.length + ' ta yangi matn');
 }
 
+// Sheet matnlari Firebase'ga yuborilmaydi: ikki qurilma bitta Sheetni manba
+// sifatida o'qiydi. Telefon/app qayta ochilganda yoki oldinga qaytganda yangi
+// qatorlarni qo'lda "Yangilash" bosmasdan olib kelamiz.
+function autoRefreshSheet(force){
+  if (document.visibilityState === 'hidden' || state.sheetBusy || state.sheetWriteBusy || !state.sheetUrl) return;
+  const cloud = window.rejamCloud;
+  if (!isPublishedSheetUrl(state.sheetUrl) && !(cloud && cloud.sheetsConnected)) return;
+  if (!force && Date.now() - Number(state.sheetFetchedAt || 0) < 60000) return;
+  fetchSheet(true);
+}
+
 function addAppScript(raw){
   const text = String(raw == null ? '' : raw).trim().slice(0, 8000);
   if (!text) { toast('Matnni yozing'); return false; }
@@ -4530,8 +4541,15 @@ document.addEventListener('change', (e) => {
 // Ilova fonga ketganda / yopilayotganda ham yozib qo'yamiz
 // Ilova fonga ketganda saqlanmagan holat qolsa qayta urinib ko'ramiz
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden' && state.pendingEnvelope) retrySave();
+  if (document.visibilityState === 'hidden') {
+    if (state.pendingEnvelope) retrySave();
+    return;
+  }
+  setTimeout(() => autoRefreshSheet(true), 150);
 });
+window.addEventListener('pageshow', () => setTimeout(() => autoRefreshSheet(false), 200));
+window.addEventListener('focus', () => setTimeout(() => autoRefreshSheet(false), 200));
+setInterval(() => autoRefreshSheet(false), 60000);
 
 // iOS'da klaviatura ochilganda oyna klaviatura ostida qolib ketardi.
 // visualViewport balandligini CSS'ga uzatamiz - modal shu balandlikka moslashadi.
