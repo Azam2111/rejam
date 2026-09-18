@@ -2248,9 +2248,8 @@ function contentStats(todayKey){
   return { total: act.length, counts, ready: counts.montaj };
 }
 
-// Kontent panelida bosqichlar bir-birini takrorlamaydi: montaji tayyor reel
-// "video olindi" soniga yana qo'shilib ketmaydi. Shu sabab uchta raqam jami
-// rejalangan kontent soniga teng bo'ladi.
+// Bosqichlar yig'ilib boradi: montaji tayyor reel avval matni tayyor va video
+// olingan bosqichlaridan ham o'tgan. Shuning uchun u uchala hisobda ko'rinadi.
 function contentVisualStats(todayKey){
   const start = isValidDateKey(state.contentStartDate) && state.contentStartDate > todayKey
     ? state.contentStartDate : todayKey;
@@ -2258,8 +2257,10 @@ function contentVisualStats(todayKey){
   const counts = { matn:0, video:0, montaj:0 };
   const byDate = new Map();
   for (const p of scheduled) {
+    if (p.matnAt) counts.matn++;
+    if (p.videoAt) counts.video++;
+    if (p.montajAt) counts.montaj++;
     const stage = p.montajAt ? 'montaj' : (p.videoAt ? 'video' : 'matn');
-    counts[stage]++;
     if (!byDate.has(p.date)) byDate.set(p.date, []);
     byDate.get(p.date).push(stage);
   }
@@ -2968,12 +2969,12 @@ function renderContentOverview(todayKey){
   }
   const max = Math.max(1, view.total);
   const rows = [
-    { id:'matn', label:'Faqat matn', n:view.counts.matn },
+    { id:'matn', label:'Matn tayyor', n:view.counts.matn },
     { id:'video', label:'Video olindi', n:view.counts.video },
     { id:'montaj', label:'Montaj tayyor', n:view.counts.montaj },
   ];
   return `<section class="rp-card rp-overview">
-    <div class="rp-overview-head"><div><b>Kontent holati</b><span>${view.total} ta rejalangan</span></div><i>${esc(fmtUz(startDate))}dan</i></div>
+    <div class="rp-overview-head"><div><b>Kontent holati</b><span>${view.total} ta rejalangan · bosqichlar yig'ilib boradi</span></div><i>${esc(fmtUz(startDate))}dan</i></div>
     <div class="rp-overview-bars">${rows.map(row => `<div class="rp-overview-row">
       <span>${row.label}</span><div class="rp-overview-track"><i class="rp-overview-fill rp-overview-fill-${row.id}" style="width:${Math.round(row.n / max * 100)}%"></i></div><b>${row.n}</b>
     </div>`).join('')}</div>

@@ -358,7 +358,7 @@ function serve(port){
     const stats = contentVisualStats('2026-09-18');
     return { stats:{ total:stats.total, counts:stats.counts }, html:renderContentOverview('2026-09-18') };
   });
-  check('vizual panel bosqichlarni takrorlamay sanaydi', overview.stats.total === 3 && overview.stats.counts.matn === 1 && overview.stats.counts.video === 1 && overview.stats.counts.montaj === 1, JSON.stringify(overview.stats));
+  check('vizual panel bosqichlarni yig\'ilib boradigan qilib sanaydi', overview.stats.total === 3 && overview.stats.counts.matn === 3 && overview.stats.counts.video === 2 && overview.stats.counts.montaj === 1, JSON.stringify(overview.stats));
   check('vizual panel 12 haftalik sana xaritasini ko\'rsatadi', /12 haftalik reja/.test(overview.html) && /rp-overview-montaj/.test(overview.html), overview.html.slice(0, 300));
 
   group('MATNDAN KONTENT YARATISH');
