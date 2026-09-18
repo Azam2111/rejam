@@ -479,6 +479,10 @@ body {
 .rp-post-script-link { display:block; margin:9px 0 -1px; padding:3px 0; font-size:12.5px; }
 .rp-script-reader .rp-lib-tag { margin:0 0 8px; }
 .rp-teleprompter-text { max-height:52vh; overflow:auto; margin:0 0 14px; padding:17px 16px; border:1px solid #E1C890; border-radius:13px; background:#FFFDF8; color:#2F2116; font-size:17px; line-height:1.72; white-space:pre-wrap; word-break:break-word; }
+.rp-content-search { margin:13px 0 3px; }
+.rp-content-search .rp-cloud-input { margin:0; background:#FFFCF6; }
+.rp-search-label { margin:12px 0 8px; }
+.rp-search-empty { margin:10px 0 2px; padding:10px 12px; border-radius:10px; background:#FBF8F2; color:#8A7259; font-size:12.5px; }
 .rp-bridge { margin-top:22px; padding-top:16px; border-top:1px solid #E6DFD2; }
 .rp-bridge-title { font-size:12.5px; color:#A08F76; margin-bottom:4px; }
 .rp-bridge .rp-add-btn { margin-top:9px; font-size:14px; padding:12px; }

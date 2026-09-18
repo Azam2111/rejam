@@ -454,6 +454,7 @@ let state = {
   editingPostId: null,
   libQuery: '',
   libFilter: 'yangi',        // yangi | hammasi | ishlatilgan
+  contentQuery: '',
   scriptPreview: null,
   importRaw: '',
   importMode: 'auto',
@@ -2853,6 +2854,7 @@ function renderContentTab(today){
   return `
     ${renderReadyBar(todayKey)}
     ${renderScriptBank(yangi)}
+    <div class="rp-content-search"><input class="rp-cloud-input" id="f-content-q" data-draft="contentq" placeholder="Kiyim, lokatsiya, kod yoki matndan qidiring..." value="${esc(state.contentQuery)}" /><div id="content-search-results">${renderContentSearchResults(todayKey)}</div></div>
     <div class="rp-schedule-guide"><b>Avval tayyor videolarni sanaga qo'ying.</b> Keyin &laquo;Kunlarga bo'l&raquo; matnlarni faqat bo'sh kunlarga joylaydi.</div>
     ${renderShootBatches()}
     ${bosh}
@@ -2866,6 +2868,24 @@ function renderContentTab(today){
       <button class="rp-add-btn" data-action="open-ready-days">Tayyor kunlarni belgilash</button>
       <button class="rp-add-btn" data-action="open-add-post">Bitta video qo'shish</button>
     </div>`;
+}
+
+function postSearchText(post){
+  const script = post.scriptId ? state.scripts.find(sc => sc.id === post.scriptId) : null;
+  return [post.ref, post.title, post.note, script && script.tag, script && script.text]
+    .filter(Boolean).join(' ').toLocaleLowerCase('uz');
+}
+
+function renderContentSearchResults(todayKey){
+  const raw = String(state.contentQuery || '').trim();
+  if (!raw) return '';
+  const words = raw.toLocaleLowerCase('uz').split(/\s+/).filter(Boolean);
+  const matches = postsSorted().filter(post => {
+    const haystack = postSearchText(post);
+    return words.every(word => haystack.includes(word));
+  });
+  if (!matches.length) return `<div class="rp-search-empty">“${esc(raw)}” bo'yicha rejalangan video topilmadi.</div>`;
+  return `<div class="rp-sec-label rp-search-label">Qidiruv natijasi <i>${matches.length}</i></div><div class="rp-list rp-search-list">${matches.map(post => renderPostCard(post, todayKey)).join('')}</div>`;
 }
 
 // Eng muhim ikki raqam: qaysi sanagacha tayyor, va nechta matn navbatda.
@@ -4214,6 +4234,11 @@ document.addEventListener('input', (e) => {
   else if (el.id === 'f-report-date') { state.reportDate = el.value; render(); }
   else if (el.dataset && el.dataset.draft === 'sheeturl') { state.sheetUrl = el.value; }
   else if (el.dataset && el.dataset.draft === 'split') { state.splitCount = el.value; render(); }
+  else if (el.dataset && el.dataset.draft === 'contentq') {
+    state.contentQuery = el.value;
+    const box = document.getElementById('content-search-results');
+    if (box) box.innerHTML = renderContentSearchResults(toKey(new Date()));
+  }
   else if (el.dataset && el.dataset.draft === 'libq') {
     // Qidiruvda render() maydonni qayta yaratadi va fokus yo'qoladi - shuning uchun
     // faqat ro'yxat qismini yangilaymiz.

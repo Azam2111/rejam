@@ -595,6 +595,8 @@ function serve(port){
   await page.evaluate(() => { state.viewingScriptId = 'choose'; state.showScriptViewer = true; render(); });
   check('teleprompter oynasida to\'liq matn va nusxa tugmasi bor', await page.evaluate(() => /Istalgan sanaga qo'yiladigan matn/.test(document.body.innerText) && /Teleprompter uchun nusxa olish/.test(document.body.innerText)));
   await page.evaluate(() => { state.showScriptViewer = false; state.viewingScriptId = null; });
+  const contentSearch = await page.evaluate(() => { state.contentQuery = 'istalgan sanaga'; return renderContentSearchResults('2026-10-01'); });
+  check('1-2 so\'z bilan qidiruv rejalangan sanani topadi', /5-Noyabr/.test(contentSearch) && /Matnni ko'rish/.test(contentSearch), contentSearch);
   await page.evaluate(() => { state.tab = 'kontent'; state.showLibrary = true; render(); });
   await page.waitForTimeout(120);
   check('kutubxonada nusxa olish tugmasi bor', await page.evaluate(() => /Nusxa olish/.test(document.body.innerText)));
