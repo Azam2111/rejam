@@ -635,6 +635,18 @@ function serve(port){
   check("faqat olingan 4 video sochib joylanadi", shoot.scheduled === 4 && JSON.stringify(shoot.dates) === JSON.stringify(['2026-10-01','2026-10-06','2026-10-11','2026-10-16']), JSON.stringify(shoot));
   check("olinmagan beshinchi matn zaxirada qoladi va kod postda bor", shoot.used === 4 && shoot.available === 1 && shoot.refs.every(r => /^SY-/.test(r)), JSON.stringify(shoot));
 
+  const meta = await page.evaluate(() => {
+    state.posts = [{ id:'oldmeta', title:'Eski oq video', date:'2026-10-01', scriptId:null, note:'', outfit:'Oq futbolka', location:'Ofis', createdAt:1, editedAt:1, matnAt:1, videoAt:1, montajAt:null }];
+    state.shootBatches = [{ id:'oldbatch', code:'SY-OLD-01', label:'Eski', outfit:'  oq   futbolka ', location:'OFIS', scriptIds:['shoot1'], shotIds:['shoot1'], gapDays:5, startDate:'2026-10-01', status:'scheduled', scheduledPostIds:['oldmeta'], createdAt:1 }];
+    return {
+      outfits:shootMetaOptions('outfit'), locations:shootMetaOptions('location'),
+      canonical:canonicalShootMeta('outfit', 'OQ FUTBOLKA'),
+      dates:scatterFreeDates(2, parseKey('2026-10-02'), 5, { outfit:'Oq futbolka', location:'Boshqa joy' })
+    };
+  });
+  check('kiyim va lokatsiya avvalgi qiymatlardan takrorlanmas ro\'yxat bo\'ladi', meta.outfits.length === 1 && meta.locations.length === 1 && meta.canonical === meta.outfits[0], JSON.stringify(meta));
+  check('bir xil kiyim yaqin sanaga ketma-ket qo\'yilmaydi', JSON.stringify(meta.dates) === JSON.stringify(['2026-10-06','2026-10-11']), JSON.stringify(meta.dates));
+
   check('konsolda xato yo\'q', errors.length === 0, errors.join(' | '));
 
   console.log(out.join('\n'));
