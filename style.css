@@ -476,6 +476,9 @@ body {
 .rp-sec-label { font-family:'Fraunces',serif; font-weight:600; font-size:13px; color:#8A7259; margin:18px 0 9px; display:flex; align-items:center; gap:7px; }
 .rp-sec-label i { font-style:normal; font-size:11px; color:#A08F76; background:#EFE4D2; border-radius:8px; padding:1px 6px; }
 .rp-post-ref { font-family:'Fraunces',serif; font-size:11.5px; font-weight:600; color:#6B7FA6; background:#EDF0F6; border-radius:7px; padding:3px 7px; flex-shrink:0; }
+.rp-post-script-link { display:block; margin:9px 0 -1px; padding:3px 0; font-size:12.5px; }
+.rp-script-reader .rp-lib-tag { margin:0 0 8px; }
+.rp-teleprompter-text { max-height:52vh; overflow:auto; margin:0 0 14px; padding:17px 16px; border:1px solid #E1C890; border-radius:13px; background:#FFFDF8; color:#2F2116; font-size:17px; line-height:1.72; white-space:pre-wrap; word-break:break-word; }
 .rp-bridge { margin-top:22px; padding-top:16px; border-top:1px solid #E6DFD2; }
 .rp-bridge-title { font-size:12.5px; color:#A08F76; margin-bottom:4px; }
 .rp-bridge .rp-add-btn { margin-top:9px; font-size:14px; padding:12px; }

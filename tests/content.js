@@ -590,6 +590,11 @@ function serve(port){
     return { ok, date: state.posts[0] && state.posts[0].date, used: isScriptUsed('choose') };
   });
   check('matn istalgan tanlangan kunga qo\'yiladi', manualDate.ok && manualDate.date === '2026-11-05' && manualDate.used, JSON.stringify(manualDate));
+  await page.evaluate(() => { state.tab = 'kontent'; render(); });
+  check('jadval kartasidan matnni ko\'rish tugmasi bor', await page.evaluate(() => /Matnni ko'rish/.test(document.body.innerText)));
+  await page.evaluate(() => { state.viewingScriptId = 'choose'; state.showScriptViewer = true; render(); });
+  check('teleprompter oynasida to\'liq matn va nusxa tugmasi bor', await page.evaluate(() => /Istalgan sanaga qo'yiladigan matn/.test(document.body.innerText) && /Teleprompter uchun nusxa olish/.test(document.body.innerText)));
+  await page.evaluate(() => { state.showScriptViewer = false; state.viewingScriptId = null; });
   await page.evaluate(() => { state.tab = 'kontent'; state.showLibrary = true; render(); });
   await page.waitForTimeout(120);
   check('kutubxonada nusxa olish tugmasi bor', await page.evaluate(() => /Nusxa olish/.test(document.body.innerText)));

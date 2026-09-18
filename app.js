@@ -449,6 +449,8 @@ let state = {
   shootBatchDraft: null,
   showScheduleScript: false,
   schedulingScriptId: null,
+  showScriptViewer: false,
+  viewingScriptId: null,
   editingPostId: null,
   libQuery: '',
   libFilter: 'yangi',        // yangi | hammasi | ishlatilgan
@@ -1870,6 +1872,7 @@ function render(){
     ${state.showReadyDays ? renderReadyDaysModal() : ''}
     ${state.showShootBatch ? renderShootBatchModal(today) : ''}
     ${state.showScheduleScript ? renderScheduleScriptModal(today) : ''}
+    ${state.showScriptViewer ? renderScriptViewerModal() : ''}
     ${state.showLibrary ? renderLibraryModal() : ''}
     ${state.showImportScripts ? renderImportScriptsModal() : ''}
     ${state.showPick ? renderPickModal() : ''}
@@ -2157,7 +2160,7 @@ function renderIdeaCard(it){
 function renderFab(){
   if (state.showAddPlan || state.showAddTask || state.showBackup || state.showCapture
       || state.showQuickAdd || state.showAddScript || state.showAddPost || state.showLibrary || state.showImportScripts || state.showPick
-      || state.showReelImport || state.showReport || state.showSheet || state.showSplit || state.showContentSettings || state.showShootBatch) return '';
+      || state.showReelImport || state.showReport || state.showSheet || state.showSplit || state.showContentSettings || state.showShootBatch || state.showScriptViewer) return '';
   return `<button class="rp-fab" data-action="open-quick-add" aria-label="Yangi yozuv qo'shish">&#43;</button>`;
 }
 
@@ -3051,6 +3054,7 @@ function renderPostCard(p, todayKey){
     ? (p.date === todayKey ? 'Bugun' : fmtUz(parseKey(p.date)))
     : 'Zaxira';
   const late = p.date && p.date < todayKey && !p.montajAt;
+  const hasScript = !!(p.scriptId && state.scripts.some(sc => sc.id === p.scriptId));
   return `
     <div class="rp-card rp-post">
       <div class="rp-post-top">
@@ -3084,6 +3088,7 @@ function renderAddPostModal(today){
         <button class="rp-save-btn" data-action="save-post">Qo'shish</button>
         <p class="rp-note rp-note-small">Tayyor video uchun nom va sanani kiriting. Shu sana keyingi avtomatik taqsimlashda band deb olinadi.</p>
       </div>
+      ${hasScript ? `<button class="rp-link-btn rp-post-script-link" data-action="open-script-viewer" data-id="${esc(p.scriptId)}">Matnni ko'rish &middot; Nusxa olish</button>` : ''}
     </div>`;
 }
 
@@ -3184,6 +3189,18 @@ function renderScheduleScriptModal(today){
   </div></div>`;
 }
 
+function renderScriptViewerModal(){
+  const sc = state.scripts.find(x => x.id === state.viewingScriptId);
+  if (!sc) return '';
+  return `<div class="rp-modal-overlay" data-action="close-script-viewer"><div class="rp-modal rp-modal-tall rp-script-reader" data-action="noop">
+    <div class="rp-modal-header"><span>Reels matni</span><button class="rp-icon-btn" data-action="close-script-viewer">&#10005;</button></div>
+    ${sc.tag ? `<div class="rp-lib-tag">${esc(sc.tag)}</div>` : ''}
+    <div class="rp-teleprompter-text">${esc(sc.text)}</div>
+    <button class="rp-save-btn" data-action="copy-script" data-id="${esc(sc.id)}">Teleprompter uchun nusxa olish</button>
+    <p class="rp-note rp-note-small">Nusxa olingach, teleprompter ilovasida qo'yib yuboring.</p>
+  </div></div>`;
+}
+
 function renderLibraryModal(){
   const rows = libraryRows();
   const total = state.scripts.length;
@@ -3210,6 +3227,7 @@ function renderLibraryModal(){
                 <div class="rp-lib-text">${esc(sc.text.slice(0, 260))}${sc.text.length > 260 ? '&hellip;' : ''}</div>
                 <div class="rp-lib-acts">
                   <button class="rp-link-btn" data-action="copy-script" data-id="${esc(sc.id)}">Nusxa olish</button>
+                  <button class="rp-link-btn" data-action="open-script-viewer" data-id="${esc(sc.id)}">To'liq ko'rish</button>
                   ${used || reserved ? '' : `<button class="rp-link-btn" data-action="schedule-script-open" data-id="${esc(sc.id)}">Kunga qo'yish</button>`}
                   ${reserved ? `<span class="rp-lib-reserved">S'yomkada band</span>` : `<button class="rp-link-btn" data-action="script-to-post" data-id="${esc(sc.id)}">Kontent qilish</button>`}
                   <button class="rp-link-btn" data-action="toggle-used" data-id="${esc(sc.id)}">${used ? 'Ishlatilmagan deb belgilash' : 'Ishlatilgan deb belgilash'}</button>
@@ -3991,6 +4009,8 @@ const handlers = {
   'lib-filter': (btn) => { state.libFilter = btn.dataset.f; render(); },
   'toggle-used': (btn) => { markScriptUsed(btn.dataset.id, !isScriptUsed(btn.dataset.id)); render(); },
   'copy-script': (btn) => copyScriptText(btn.dataset.id),
+  'open-script-viewer': (btn) => { state.viewingScriptId = btn.dataset.id; state.showScriptViewer = true; render(); },
+  'close-script-viewer': () => { state.showScriptViewer = false; state.viewingScriptId = null; render(); },
   'schedule-script-open': (btn) => { state.schedulingScriptId = btn.dataset.id; state.showScheduleScript = true; render(); },
   'close-schedule-script': () => { state.showScheduleScript = false; state.schedulingScriptId = null; render(); },
   'schedule-script': (btn) => {
@@ -4208,6 +4228,7 @@ document.addEventListener('input', (e) => {
           '<div class="rp-lib-text">' + esc(sc.text.slice(0, 260)) + (sc.text.length > 260 ? '&hellip;' : '') + '</div>' +
           '<div class="rp-lib-acts">' +
             '<button class="rp-link-btn" data-action="copy-script" data-id="' + esc(sc.id) + '">Nusxa olish</button>' +
+            '<button class="rp-link-btn" data-action="open-script-viewer" data-id="' + esc(sc.id) + '">To\'liq ko\'rish</button>' +
             (used || reserved ? '' : '<button class="rp-link-btn" data-action="schedule-script-open" data-id="' + esc(sc.id) + '">Kunga qo\'yish</button>') +
             (reserved ? '<span class="rp-lib-reserved">S\'yomkada band</span>' : '<button class="rp-link-btn" data-action="script-to-post" data-id="' + esc(sc.id) + '">Kontent qilish</button>') +
             '<button class="rp-link-btn" data-action="toggle-used" data-id="' + esc(sc.id) + '">' +
