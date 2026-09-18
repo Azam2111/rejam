@@ -3002,11 +3002,11 @@ function renderContentSettingsModal(){
     <label class="rp-field"><span>Kuniga nechta Reel</span>
       <select id="f-content-per-day" data-action="noop">${[1,2,3,4,5].map(n => `<option value="${n}"${plan.perDay === n ? ' selected' : ''}>${n} ta</option>`).join('')}</select>
     </label>
-    <label class="rp-field"><span>Boshlanish sanasi</span>
+    <label class="rp-field"><span>${plan.locked ? 'Zaxira qaysi sanadan hisoblanadi' : 'Nashr boshlanish sanasi'}</span>
       <input id="f-content-start" type="date" value="${esc(plan.start)}" ${plan.locked ? 'disabled' : ''} />
     </label>
-    <button class="rp-link-btn rp-content-start-preset" data-action="set-content-start-next-month" data-date="${nextMonth}">${esc(fmtUz(parseKey(nextMonth)))}dan boshlash</button>
-    <p class="rp-note rp-note-small">${plan.locked ? esc(fmtUz(parseKey(plan.lastPlanned))) + 'gacha rejalangan kontent bor — boshlanish sanasi avtomatik.' : 'Bu sanadan oldingi kontent zaxira hisobiga kirmaydi.'}</p>
+    ${plan.locked ? '' : `<button class="rp-link-btn rp-content-start-preset" data-action="set-content-start-next-month" data-date="${nextMonth}">${esc(fmtUz(parseKey(nextMonth)))}dan boshlash</button>`}
+    <p class="rp-note rp-note-small">${plan.locked ? esc(fmtUz(parseKey(plan.lastPlanned))) + 'gacha reja bor — yangi zaxira ' + esc(fmtUz(parseKey(plan.start))) + 'dan hisoblanadi.' : 'Bu sanadan oldingi kontent zaxira hisobiga kirmaydi.'}</p>
     <button class="rp-save-btn" data-action="save-content-settings">Saqlash</button>
   </div></div>`;
 }
