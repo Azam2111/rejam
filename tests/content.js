@@ -348,6 +348,19 @@ function serve(port){
   st = await page.evaluate(() => contentStats(toKey(new Date())));
   check('o\'tgan kundagi kontent zaxirani sun\'iy ko\'paytirmaydi', st.ready === 2, JSON.stringify(st));
 
+  const overview = await page.evaluate(() => {
+    state.contentStartDate = '2026-10-01';
+    state.posts = [
+      { id:'ov1', title:'Matn', date:'2026-10-01', scriptId:null, matnAt:1, videoAt:null, montajAt:null },
+      { id:'ov2', title:'Video', date:'2026-10-04', scriptId:null, matnAt:1, videoAt:1, montajAt:null },
+      { id:'ov3', title:'Montaj', date:'2026-10-06', scriptId:null, matnAt:1, videoAt:1, montajAt:1 },
+    ];
+    const stats = contentVisualStats('2026-09-18');
+    return { stats:{ total:stats.total, counts:stats.counts }, html:renderContentOverview('2026-09-18') };
+  });
+  check('vizual panel bosqichlarni takrorlamay sanaydi', overview.stats.total === 3 && overview.stats.counts.matn === 1 && overview.stats.counts.video === 1 && overview.stats.counts.montaj === 1, JSON.stringify(overview.stats));
+  check('vizual panel 12 haftalik sana xaritasini ko\'rsatadi', /12 haftalik reja/.test(overview.html) && /rp-overview-montaj/.test(overview.html), overview.html.slice(0, 300));
+
   group('MATNDAN KONTENT YARATISH');
   await clear();
   await page.evaluate(() => { prepareScriptImport("Arab tilida uch xil so'z bor va ular juda muhim hisoblanadi"); });

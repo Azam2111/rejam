@@ -496,6 +496,39 @@ body {
 .rp-ready-sub { font-size:12.5px; color:#8A7259; margin-top:4px; }
 .rp-ready-row { display:flex; gap:16px; margin-top:12px; padding-top:11px; border-top:1px solid #EBDFC7; font-size:12.5px; color:#8A7259; }
 .rp-ready-row b { font-family:'Fraunces',serif; font-size:15px; color:#3A2A1C; margin-right:3px; }
+.rp-overview { padding:16px; margin-top:12px; overflow:hidden; }
+.rp-overview-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.rp-overview-head > div { display:flex; flex-direction:column; gap:2px; }
+.rp-overview-head b { font-family:'Fraunces',serif; color:#3A2A1C; font-size:18px; }
+.rp-overview-head span { color:#8A7259; font-size:12px; }
+.rp-overview-head > i { padding:4px 8px; border-radius:8px; background:#F6EFE3; color:#8A7259; font-size:11px; font-style:normal; white-space:nowrap; }
+.rp-overview-bars { display:flex; flex-direction:column; gap:8px; margin:15px 0 18px; }
+.rp-overview-row { display:grid; grid-template-columns:76px 1fr 24px; align-items:center; gap:8px; }
+.rp-overview-row > span { color:#745F49; font-size:11.5px; }
+.rp-overview-row > b { color:#3A2A1C; font-family:'Fraunces',serif; font-size:14px; text-align:right; font-variant-numeric:tabular-nums; }
+.rp-overview-track { height:9px; overflow:hidden; border-radius:10px; background:#EFE4D2; }
+.rp-overview-fill { display:block; height:100%; min-width:0; border-radius:10px; transition:width .45s cubic-bezier(.34,1.2,.64,1); }
+.rp-overview-fill-matn { background:#B75B3D; }
+.rp-overview-fill-video { background:#6B7FA6; }
+.rp-overview-fill-montaj { background:#5F8C55; }
+.rp-overview-calendar-head { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-bottom:8px; }
+.rp-overview-calendar-head b { color:#3A2A1C; font-family:'Fraunces',serif; font-size:14px; }
+.rp-overview-calendar-head span { color:#A08F76; font-size:10.5px; }
+.rp-overview-weekdays, .rp-overview-calendar { display:grid; grid-template-columns:repeat(7, minmax(0, 1fr)); gap:4px; }
+.rp-overview-weekdays { margin-bottom:4px; color:#A08F76; font-size:9.5px; font-weight:700; text-align:center; }
+.rp-overview-day { position:relative; min-height:34px; display:flex; align-items:center; justify-content:center; border:1px solid #EBDFC7; border-radius:8px; background:#FBF8F2; color:#9D8B73; font-size:11.5px; font-variant-numeric:tabular-nums; }
+.rp-overview-day b { position:absolute; right:3px; bottom:0; color:inherit; font-size:10px; line-height:1; }
+.rp-overview-blank { visibility:hidden; }
+.rp-overview-matn { border-color:#D89C88; background:#F7E7E1; color:#9B3F26; font-weight:700; }
+.rp-overview-video { border-color:#A9B6CE; background:#EDF0F6; color:#53698F; font-weight:700; }
+.rp-overview-montaj { border-color:#B9D1AE; background:#EEF5E9; color:#4A713F; font-weight:700; }
+.rp-overview-today { box-shadow:inset 0 0 0 1px #C08A2E; }
+.rp-overview-legend { display:flex; flex-wrap:wrap; gap:6px 12px; margin-top:9px; color:#8A7259; font-size:10.5px; }
+.rp-overview-legend span { display:flex; align-items:center; gap:4px; }
+.rp-overview-legend i { width:8px; height:8px; border-radius:50%; }
+.rp-legend-matn { background:#B75B3D; }
+.rp-legend-video { background:#6B7FA6; }
+.rp-legend-montaj { background:#5F8C55; }
 .rp-schedule-guide { margin:12px 0 4px; padding:10px 12px; border-left:3px solid #C08A2E; border-radius:0 10px 10px 0; background:#FBEFE0; color:#745D42; font-size:12.5px; line-height:1.45; }
 .rp-schedule-guide b { color:#5A421F; }
 .rp-ready-cal-head { display:flex; align-items:center; justify-content:space-between; margin:16px 0 10px; }

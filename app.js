@@ -2246,6 +2246,24 @@ function contentStats(todayKey){
   return { total: act.length, counts, ready: counts.montaj };
 }
 
+// Kontent panelida bosqichlar bir-birini takrorlamaydi: montaji tayyor reel
+// "video olindi" soniga yana qo'shilib ketmaydi. Shu sabab uchta raqam jami
+// rejalangan kontent soniga teng bo'ladi.
+function contentVisualStats(todayKey){
+  const start = isValidDateKey(state.contentStartDate) && state.contentStartDate > todayKey
+    ? state.contentStartDate : todayKey;
+  const scheduled = state.posts.filter(p => p.date && p.date >= start);
+  const counts = { matn:0, video:0, montaj:0 };
+  const byDate = new Map();
+  for (const p of scheduled) {
+    const stage = p.montajAt ? 'montaj' : (p.videoAt ? 'video' : 'matn');
+    counts[stage]++;
+    if (!byDate.has(p.date)) byDate.set(p.date, []);
+    byDate.get(p.date).push(stage);
+  }
+  return { start, total:scheduled.length, counts, byDate };
+}
+
 function stageOn(post, stageId){ return !!post[stageId + 'At']; }
 
 // Bosqichni bosganda tartib avtomatik saqlanadi:
@@ -2861,6 +2879,7 @@ function renderContentTab(today){
 
   return `
     ${renderReadyBar(todayKey)}
+    ${renderContentOverview(todayKey)}
     ${renderScriptBank(yangi)}
     <div class="rp-content-search"><input class="rp-cloud-input" id="f-content-q" data-draft="contentq" placeholder="Kiyim, lokatsiya, kod yoki matndan qidiring..." value="${esc(state.contentQuery)}" /><div id="content-search-results">${renderContentSearchResults(todayKey)}</div></div>
     <div class="rp-schedule-guide"><b>Avval tayyor videolarni sanaga qo'ying.</b> Keyin &laquo;Kunlarga bo'l&raquo; matnlarni faqat bo'sh kunlarga joylaydi.</div>
@@ -2876,6 +2895,41 @@ function renderContentTab(today){
       <button class="rp-add-btn" data-action="open-ready-days">Tayyor kunlarni belgilash</button>
       <button class="rp-add-btn" data-action="open-add-post">Bitta video qo'shish</button>
     </div>`;
+}
+
+function renderContentOverview(todayKey){
+  const view = contentVisualStats(todayKey);
+  const startDate = parseKey(view.start);
+  const offset = (startDate.getDay() + 6) % 7; // Dushanbadan boshlanadigan taqvim
+  const cells = Array(offset).fill('<div class="rp-overview-day rp-overview-blank"></div>');
+  let end = startDate;
+  for (let i = 0; i < 84; i++) {
+    const d = addDays(startDate, i), key = toKey(d), stages = view.byDate.get(key) || [];
+    const counts = { matn:0, video:0, montaj:0 };
+    for (const stage of stages) counts[stage]++;
+    const top = counts.montaj ? 'montaj' : (counts.video ? 'video' : (counts.matn ? 'matn' : 'empty'));
+    const detail = [counts.matn ? counts.matn + ' matn' : '', counts.video ? counts.video + ' video' : '', counts.montaj ? counts.montaj + ' montaj' : ''].filter(Boolean).join(', ');
+    cells.push(`<div class="rp-overview-day rp-overview-${top}${key === todayKey ? ' rp-overview-today' : ''}" title="${esc(fmtUz(d))}${detail ? ': ' + esc(detail) : ''}">
+      <span>${d.getDate()}</span>${stages.length ? `<b>${stages.length > 1 ? stages.length : '&#8226;'}</b>` : ''}
+    </div>`);
+    end = d;
+  }
+  const max = Math.max(1, view.total);
+  const rows = [
+    { id:'matn', label:'Faqat matn', n:view.counts.matn },
+    { id:'video', label:'Video olindi', n:view.counts.video },
+    { id:'montaj', label:'Montaj tayyor', n:view.counts.montaj },
+  ];
+  return `<section class="rp-card rp-overview">
+    <div class="rp-overview-head"><div><b>Kontent holati</b><span>${view.total} ta rejalangan</span></div><i>${esc(fmtUz(startDate))}dan</i></div>
+    <div class="rp-overview-bars">${rows.map(row => `<div class="rp-overview-row">
+      <span>${row.label}</span><div class="rp-overview-track"><i class="rp-overview-fill rp-overview-fill-${row.id}" style="width:${Math.round(row.n / max * 100)}%"></i></div><b>${row.n}</b>
+    </div>`).join('')}</div>
+    <div class="rp-overview-calendar-head"><b>12 haftalik reja</b><span>${esc(fmtUz(startDate))} — ${esc(fmtUz(end))}</span></div>
+    <div class="rp-overview-weekdays">${['Du','Se','Cho','Pa','Ju','Sha','Ya'].map(x => `<span>${x}</span>`).join('')}</div>
+    <div class="rp-overview-calendar">${cells.join('')}</div>
+    <div class="rp-overview-legend"><span><i class="rp-legend-matn"></i>Faqat matn</span><span><i class="rp-legend-video"></i>Video</span><span><i class="rp-legend-montaj"></i>Montaj</span></div>
+  </section>`;
 }
 
 function postSearchText(post){
@@ -3100,6 +3154,7 @@ function renderPostCard(p, todayKey){
             <span class="rp-stage-tick">${stageOn(p, sg.id) ? '&#10003;' : ''}</span>${sg.label}
           </button>`).join('')}
       </div>
+      ${hasScript ? `<button class="rp-link-btn rp-post-script-link" data-action="open-script-viewer" data-id="${esc(p.scriptId)}">Matnni ko'rish &middot; Nusxa olish</button>` : ''}
     </div>`;
 }
 
@@ -3118,7 +3173,6 @@ function renderAddPostModal(today){
         <button class="rp-save-btn" data-action="save-post">Qo'shish</button>
         <p class="rp-note rp-note-small">Tayyor video uchun nom va sanani kiriting. Shu sana keyingi avtomatik taqsimlashda band deb olinadi.</p>
       </div>
-      ${hasScript ? `<button class="rp-link-btn rp-post-script-link" data-action="open-script-viewer" data-id="${esc(p.scriptId)}">Matnni ko'rish &middot; Nusxa olish</button>` : ''}
     </div>`;
 }
 
