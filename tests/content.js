@@ -153,7 +153,7 @@ function serve(port){
   await page.evaluate(() => { state.tab = 'kontent'; render(); });
   let bui = await page.evaluate(() => document.body.innerText);
   check('tayyorlik sanasi ko\'rsatiladi', /gacha tayyor|tayyor emas/.test(bui), bui.slice(0,200));
-  check('matn zaxirasi ko\'rsatiladi', /ta matn zaxirada/.test(bui), bui.slice(0,200));
+  check('bo\'sh matn zaxirasi ko\'rsatiladi', /bo'sh matn zaxirada/.test(bui), bui.slice(0,200));
   check('reel ID kartada ko\'rinadi', /R012/.test(bui));
   check('funksiyalar joyida', true);
 
@@ -361,7 +361,7 @@ function serve(port){
   check('kontent yaratiladi', !!created, JSON.stringify(created));
   check('matn bosqichi darhol tayyor', !!created.matnAt);
   check('matn ID ga bog\'lanadi', created.scriptId === sid);
-  check('matn avtomatik ishlatilgan deb belgilanadi', await page.evaluate((id) => isScriptUsed(id), sid));
+  check('faqat rejalangan matn hali ishlatilgan deb belgilanmaydi', await page.evaluate((id) => !isScriptUsed(id), sid));
   check('video va montaj hali yo\'q', !created.videoAt && !created.montajAt);
 
   group('SAQLASH VA QAYTA YUKLASH');
@@ -369,7 +369,7 @@ function serve(port){
   const after = await page.evaluate(() => ({ posts: state.posts.length, scripts: state.scripts.length, used: state.usedScripts.length }));
   check('kontent diskdan qaytadi', after.posts === 1, JSON.stringify(after));
   check('matnlar diskdan qaytadi', after.scripts === 1, JSON.stringify(after));
-  check('ishlatilgan belgilari qaytadi', after.used === 1, JSON.stringify(after));
+  check('faqat rejalangan matn ishlatilgan deb saqlanmaydi', after.used === 0, JSON.stringify(after));
 
   group('BULUT: matnlar yuborilmaydi, belgilar yuboriladi');
   const cv = await page.evaluate(() => window.rejamGetLocal());
@@ -428,14 +428,16 @@ function serve(port){
   const ds = ps.map(x => x.d).sort();
   check('bugundan boshlanadi', ds[0] === await page.evaluate(() => toKey(new Date())), JSON.stringify(ds));
   check('kunlar ketma-ket va takrorlanmaydi', new Set(ds).size === 3, JSON.stringify(ds));
-  check('taqsimlangan matnlar ishlatilgan bo\'ladi', await page.evaluate(() => unusedScripts().length) === 2);
+  check('taqsimlangan matnlar rejalangan, lekin ishlatilmagan bo\'ladi', await page.evaluate(() => unusedScripts().length === 5 && availableScripts().length === 2 && plannedUnfilmedScriptIds().size === 3));
+  await page.evaluate(() => togglePostStage(state.posts[0].id, 'video'));
+  check('video olindi deb belgilansa matn ishlatilgan bo\'ladi', await page.evaluate(() => isScriptUsed(state.posts[0].scriptId)));
 
   // Band kunlar o'tkazib yuboriladi
   n = await page.evaluate(() => splitIntoDays(2));
   await page.waitForTimeout(250);
   const allD = await page.evaluate(() => state.posts.map(p => p.date).sort());
   check('ikkinchi taqsimlash band kunlarni bosmaydi', new Set(allD).size === 5, JSON.stringify(allD));
-  check('zaxirada matn qolmadi', await page.evaluate(() => unusedScripts().length) === 0);
+  check('qolgan matnlar rejalangan, ammo hali ishlatilmagan', await page.evaluate(() => unusedScripts().length === 4 && availableScripts().length === 0 && plannedUnfilmedScriptIds().size === 4));
   check('yo\'q matnni taqsimlab bo\'lmaydi', await page.evaluate(() => splitIntoDays(3)) === 0);
 
   group('ZANJIR: qaysi sanagacha tayyor');
@@ -481,7 +483,7 @@ function serve(port){
   await page.waitForTimeout(250);
   const zui = await page.evaluate(() => document.body.innerText);
   check('"...gacha tayyor" ko\'rinadi', /gacha tayyor/.test(zui), zui.slice(0,240));
-  check('matn zaxirasi ko\'rinadi', /1\s*ta matn zaxirada/.test(zui.replace(/\n/g,' ')), zui.slice(0,240));
+  check('bo\'sh matn zaxirasi ko\'rinadi', /1\s*ta bo'sh matn zaxirada/.test(zui.replace(/\n/g,' ')), zui.slice(0,240));
   check('jadval ulanmagani aytiladi', /jadval ulanmagan/.test(zui));
   check('"Kunlarga bo\'l" tugmasi bor', /Kunlarga bo'l/.test(zui));
 

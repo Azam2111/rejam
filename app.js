@@ -1197,7 +1197,11 @@ async function bootstrapStorage(){
     }
   }
 
+  // Eski versiya kunga qo'yilgan matnlarni ham "ishlatilgan" degan edi.
+  // Ular hali video olinmagan bo'lsa, faqat rejalangan deb qolishi kerak.
+  const usageMigrated = reconcileScheduledScriptUsage();
   ensureEditedAt(best ? best.env : null);
+  if (usageMigrated) await commit();
   cloudPrev = deepCopy(cloudView());
 
   state.booted = true;
@@ -2260,6 +2264,8 @@ function togglePostStage(postId, stageId){
     for (let k = idx; k < STAGE_KEYS.length; k++) p[STAGE_KEYS[k]] = null;
   }
   state.posts = state.posts.map(x => x.id === postId ? p : x);
+  // Video olindi (yoki montaj bosqichi yoqildi) — faqat endi matn haqiqatan ishlatildi.
+  if (p.scriptId && p.videoAt && !isScriptUsed(p.scriptId)) state.usedScripts = state.usedScripts.concat([p.scriptId]);
   commit();
   if (turningOn && stageId === 'montaj') toast('Tayyor — Instagramga qo\'yish mumkin');
   render();
@@ -2276,7 +2282,7 @@ function addPost(title, date, scriptId, readyStage){
   const readyIdx = CONTENT_STAGES.findIndex(s => s.id === readyStage);
   if (readyIdx >= 0) for (let i = 0; i <= readyIdx; i++) p[STAGE_KEYS[i]] = now;
   state.posts = state.posts.concat([p]);
-  if (scriptId) markScriptUsed(scriptId, true);
+  // Kunga qo'yish yoki kontent kartasi yaratish — hali video olinishi degani emas.
   commit();
   return p;
 }
@@ -2615,7 +2621,6 @@ function splitIntoDays(count){
     });
   }
   state.posts = state.posts.concat(add);
-  state.usedScripts = state.usedScripts.concat(pool.slice(0, n).map(x => x.id));
   commit();
   return n;
 }
@@ -2715,7 +2720,10 @@ function reservedScriptIds(){
   return ids;
 }
 function isScriptReserved(id){ return reservedScriptIds().has(id); }
-function availableScripts(){ return unusedScripts().filter(sc => !isScriptReserved(sc.id)); }
+function availableScripts(){
+  const assigned = assignedScriptIds();
+  return unusedScripts().filter(sc => !assigned.has(sc.id) && !isScriptReserved(sc.id));
+}
 function shootingCount(){ return reservedScriptIds().size; }
 function makeBatchCode(){
   const day = toKey(new Date()).replace(/-/g, '').slice(2);
@@ -2908,16 +2916,17 @@ function renderReadyBar(todayKey){
 // Matn zaxirasi: Sheet bilan bog'liq hamma narsa shu yerda.
 function renderScriptBank(yangi){
   const linked = !!sheetCsvUrl(state.sheetUrl);
+  const planned = plannedUnfilmedScriptIds().size;
   const tone = yangi >= 30 ? 'ok' : (yangi >= 10 ? 'warn' : 'bad');
   const plan = scriptReservePlan(toKey(new Date()), yangi, state.contentPerDay);
   const schedule = yangi
     ? `${esc(fmtUz(parseKey(plan.start)))}dan bo'sh kunlarga · kuniga ${plan.perDay} tadan · ${esc(fmtUz(parseKey(plan.end)))}gacha yetadi`
-    : 'Ishlatilmagan matn qolmadi';
+    : (planned ? `${planned} ta matn rejalangan · hali video olinmagan` : 'Bo\'sh matn qolmadi');
   return `
     <div class="rp-bank">
       <div class="rp-bank-nums">
         <span class="rp-bank-big rp-tone-${tone}">${yangi}</span>
-        <span class="rp-bank-lbl">ta matn zaxirada<br><i>${linked ? 'jadval ulangan' : 'jadval ulanmagan'}</i></span>
+        <span class="rp-bank-lbl">ta bo'sh matn zaxirada<br><i>${linked ? 'jadval ulangan' : 'jadval ulanmagan'}</i></span>
       </div>
       <div class="rp-bank-plan">${schedule}</div>
       <div class="rp-bank-acts">
@@ -2929,6 +2938,7 @@ function renderScriptBank(yangi){
       <button class="rp-link-btn rp-bank-link" data-action="open-content-settings">Hisob sozlamasi</button>
       ${yangi ? `<button class="rp-link-btn rp-bank-link" data-action="open-shoot-batch">S'yomka uchun ${Math.min(5, yangi)} ta matn tanlash</button>` : ''}
       ${shootingCount() ? `<div class="rp-bank-msg">${shootingCount()} ta matn s'yomka sessiyasida band</div>` : ''}
+      ${planned ? `<div class="rp-bank-msg">${planned} ta matn kunga qo'yilgan &middot; hali video olinmagan</div>` : ''}
       ${state.sheetMsg ? `<div class="rp-bank-msg${state.sheetMsg.bad ? ' rp-bank-msg-bad' : ''}">${esc(state.sheetMsg.text)}</div>` : ''}
       ${linked ? `<button class="rp-link-btn rp-bank-link" data-action="open-sheet">Jadval sozlamasi</button>` : ''}
     </div>`;
@@ -3311,6 +3321,23 @@ function renderImportScriptsModal(){
 // Kerak bo'lganda bitta ishlatilmagan matnni beradi. Tanlash shart emas -
 // ochasiz, o'qiysiz, olasiz yoki boshqasini so'raysiz.
 function unusedScripts(){ return state.scripts.filter(x => !isScriptUsed(x.id)); }
+
+function assignedScriptIds(){
+  return new Set(state.posts.map(p => p.scriptId).filter(Boolean));
+}
+
+function plannedUnfilmedScriptIds(){
+  return new Set(state.posts.filter(p => p.scriptId && !p.videoAt).map(p => p.scriptId));
+}
+
+function reconcileScheduledScriptUsage(){
+  const pending = plannedUnfilmedScriptIds();
+  if (!pending.size) return false;
+  const next = state.usedScripts.filter(id => !pending.has(id));
+  if (next.length === state.usedScripts.length) return false;
+  state.usedScripts = next;
+  return true;
+}
 
 function pickNextScript(skipCurrent){
   const pool = availableScripts();
