@@ -34,11 +34,28 @@
     let retryTimer = null;
     // Remote'dan kelgan oxirgi editedAt, entity bo'yicha
     const remoteEdited = new Map();
+    let remoteMetaDoc = null;
     // Serverda HAQIQATAN nechta yozuv borligi. Taxmin emas - serverdan kelgan son.
     const remoteCounts = { plans: null, tasks: null, ideas: null, posts: null };
 
     const key = (coll, id) => coll + '/' + id;
     const editedOf = e => Number(e && e.editedAt) || 0;
+
+    function metaDoc(local) {
+      return {
+        id: 'state',
+        categories: local.categories || [],
+        usedScripts: local.usedScripts || [],
+        shootBatches: local.shootBatches || [],
+        sheetUrl: typeof local.sheetUrl === 'string' ? local.sheetUrl : '',
+        contentPerDay: Math.max(1, Math.min(10, Math.floor(Number(local.contentPerDay) || 1))),
+        contentStartDate: typeof local.contentStartDate === 'string' ? local.contentStartDate : '',
+      };
+    }
+
+    function sameMeta(a, b) {
+      return JSON.stringify(metaDoc(a || {})) === JSON.stringify(metaDoc(b || {}));
+    }
 
     let lastError = null;
     function setStatus(s, extra) {
@@ -116,12 +133,8 @@
           }
         }
       }
-      if (JSON.stringify(prev.categories || []) !== JSON.stringify(next.categories || []) ||
-          JSON.stringify(prev.usedScripts || []) !== JSON.stringify(next.usedScripts || [])) {
-        pushEntity('meta', 'state', { id: 'state',
-          categories: next.categories || [],
-          usedScripts: next.usedScripts || [],
-          editedAt: Date.now() });
+      if (!sameMeta(metaDoc(prev), metaDoc(next))) {
+        pushEntity('meta', 'state', Object.assign(metaDoc(next), { editedAt: Date.now() }));
       }
     }
 
@@ -132,12 +145,17 @@
 
       if (coll === 'meta') {
         const d = docs.find(x => x.id === 'state');
+        remoteMetaDoc = d ? stripMeta(d) : null;
         if (d) remoteEdited.set(key('meta', 'state'), editedOf(d));
         if (d) {
           const q = queue.get(key('meta', 'state'));
           if (!q || editedOf(q.doc) <= editedOf(d)) {
             if (Array.isArray(d.categories)) patch.categories = d.categories;
             if (Array.isArray(d.usedScripts)) patch.usedScripts = d.usedScripts;
+            if (Array.isArray(d.shootBatches)) patch.shootBatches = d.shootBatches;
+            if (typeof d.sheetUrl === 'string') patch.sheetUrl = d.sheetUrl;
+            if (d.contentPerDay != null) patch.contentPerDay = d.contentPerDay;
+            if (typeof d.contentStartDate === 'string') patch.contentStartDate = d.contentStartDate;
             if (q && Object.keys(patch).length) queue.delete(key('meta', 'state'));
           }
         }
@@ -235,11 +253,10 @@
           }
         }
       }
-      const cats = (local.categories || []);
-      const used = (local.usedScripts || []);
       const mk = key('meta', 'state');
-      if ((cats.length || used.length) && !remoteEdited.has(mk)) {
-        pushEntity('meta', 'state', { id: 'state', categories: cats, usedScripts: used, editedAt: Date.now() });
+      const localMeta = metaDoc(local);
+      if (!remoteEdited.has(mk) || !sameMeta(localMeta, remoteMetaDoc)) {
+        pushEntity('meta', 'state', Object.assign(localMeta, { editedAt: Date.now() }));
       }
     }
 
@@ -251,11 +268,7 @@
       for (const coll of COLLECTIONS) {
         for (const e of (local[coll] || [])) { pushEntity(coll, e.id, Object.assign({}, e, { deletedAt: null })); n++; }
       }
-      const cats = local.categories || [];
-      const used = local.usedScripts || [];
-      if (cats.length || used.length) {
-        pushEntity('meta', 'state', { id: 'state', categories: cats, usedScripts: used, editedAt: Date.now() });
-      }
+      pushEntity('meta', 'state', Object.assign(metaDoc(local), { editedAt: Date.now() }));
       scheduleFlush();
       return n;
     }

@@ -222,6 +222,21 @@ const PLAN = (id, name, edited) => ({ id, name, target: 10, unit: 'ta', editedAt
       JSON.stringify(b.local.categories));
   }
 
+  group('KONTENT SOZLAMALARI IKKI QURILMADA');
+  {
+    const s = makeServer();
+    const phone = makeClient(s, {});
+    const pc = makeClient(s, {});
+    await phone.sync.start(); await pc.sync.start();
+    await wait(30);
+    const batch = { id:'b1', code:'SY-01', label:'Oq futbolka', outfit:'Oq', location:'Ofis', postIds:['p1'], scriptIds:['s1'], shotIds:[], status:'shooting' };
+    phone.apply({ shootBatches:[batch], sheetUrl:'https://docs.google.com/spreadsheets/d/test/edit', contentPerDay:2, contentStartDate:'2026-10-01' });
+    await wait(80);
+    check('Sheet manzili kompyuterga tushadi', pc.local.sheetUrl === phone.local.sheetUrl, String(pc.local.sheetUrl));
+    check('s\'yomka sessiyasi kompyuterga tushadi', pc.local.shootBatches && pc.local.shootBatches.length === 1 && pc.local.shootBatches[0].outfit === 'Oq', JSON.stringify(pc.local.shootBatches));
+    check('kontent hisob sozlamasi kompyuterga tushadi', pc.local.contentPerDay === 2 && pc.local.contentStartDate === '2026-10-01', JSON.stringify(pc.local));
+  }
+
   group('OFFLINE -> ONLINE');
   {
     const s = makeServer();

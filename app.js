@@ -432,9 +432,9 @@ let state = {
   ideas: [],
   categories: [],
   posts: [],                 // kontent quvuri
-  scripts: [],               // matn kutubxonasi (bulutga yuborilmaydi - pastdagi izohga qarang)
+  scripts: [],               // matn kutubxonasi Sheetda; Firebase'ga katta matnlar yuborilmaydi
   usedScripts: [],           // ishlatilgan matn ID'lari - BULUTGA yuboriladi
-  shootBatches: [],          // s'yomka sessiyalari: scripts kabi faqat lokal/backupda
+  shootBatches: [],          // s'yomka sessiyalari: kichik meta sifatida qurilmalar orasida sinxronlanadi
   showLibrary: false,
   showImportScripts: false,
   showAddScript: false,
@@ -984,10 +984,12 @@ let cloudPrev = null;          // oxirgi marta bulutga bildirilgan lokal nusxa (
 function cloudView(){
   // DIQQAT: state.scripts ATAYLAB yuborilmaydi. 1000+ matn har qurilma kirganda
   // 1000 ta alohida hujjat o'qish/yozish degani - sekin va keraksiz. Matnlar sizning
-  // Google jadvalingizda va zaxira faylida turadi. Bulutga faqat QAYSILARI
-  // ishlatilgani (usedScripts) boradi - eng muhimi va eng kichigi shu.
+  // Google jadvalingizda va zaxira faylida turadi. Bulutga matn ID'lari,
+  // kontent holati, Sheet manzili va kichik s'yomka metasi boradi.
   return { plans: state.plans, tasks: state.tasks, ideas: state.ideas,
-           posts: state.posts, categories: state.categories, usedScripts: state.usedScripts };
+           posts: state.posts, categories: state.categories, usedScripts: state.usedScripts,
+           shootBatches: state.shootBatches, sheetUrl:state.sheetUrl,
+           contentPerDay:state.contentPerDay, contentStartDate:state.contentStartDate };
 }
 function deepCopy(o){ return JSON.parse(JSON.stringify(o)); }
 
@@ -1040,11 +1042,12 @@ window.rejamGetLocal = function(){ return cloudView(); };
 // Bulut yozadi. Ishonchsiz manba - hamma narsa validateEnvelope'dan o'tadi.
 window.rejamApplyCloud = function(patch){
   if (!patch || typeof patch !== 'object') return;
+  const oldSheetUrl = state.sheetUrl;
   const merged = Object.assign(cloudView(), patch);
   const v = validateEnvelope({
     schemaVersion: SCHEMA_VERSION,
     plans: merged.plans, tasks: merged.tasks, ideas: merged.ideas, categories: merged.categories,
-    posts: merged.posts, scripts: state.scripts, usedScripts: merged.usedScripts, shootBatches: state.shootBatches,
+    posts: merged.posts, scripts: state.scripts, usedScripts: merged.usedScripts, shootBatches: merged.shootBatches,
   });
   if (!v.ok) { console.warn('[Rejam] bulutdan kelgan ma\'lumot rad etildi:', v.issues); return; }
 
@@ -1078,6 +1081,10 @@ window.rejamApplyCloud = function(patch){
   state.ideas = v.envelope.ideas;
   state.posts = v.envelope.posts || [];
   if (Array.isArray(patch.usedScripts)) state.usedScripts = v.envelope.usedScripts || [];
+  if (Array.isArray(patch.shootBatches)) state.shootBatches = v.envelope.shootBatches || [];
+  if (typeof patch.sheetUrl === 'string') state.sheetUrl = patch.sheetUrl;
+  if (patch.contentPerDay != null) state.contentPerDay = Math.max(1, Math.min(10, Math.floor(Number(patch.contentPerDay) || 1)));
+  if (typeof patch.contentStartDate === 'string') state.contentStartDate = isValidDateKey(patch.contentStartDate) ? patch.contentStartDate : '';
   ensureEditedAt(null);
 
   // Diskka yozamiz, lekin bulutga QAYTA yubormaymiz - aks holda cheksiz aylanma
@@ -1085,6 +1092,10 @@ window.rejamApplyCloud = function(patch){
   writeQueue = writeQueue.then(() => persistEnvelope(env)).catch(() => {});
   cloudPrev = deepCopy(cloudView());
   render();
+  if (state.sheetUrl && state.sheetUrl !== oldSheetUrl) {
+    const c = window.rejamCloud;
+    if (isPublishedSheetUrl(state.sheetUrl) || (c && c.sheetsConnected)) setTimeout(() => fetchSheet(true), 0);
+  }
 };
 
 window.rejamLocalSavedAt = function(){ return revisionCounter; };
@@ -1998,7 +2009,9 @@ function renderCloudBox(){
           ${qator('Rejalar', lokal.plans, srv ? (Number(srv.plans)||0) : null)}
           ${qator('Vazifalar', lokal.tasks, srv ? (Number(srv.tasks)||0) : null)}
           ${qator('Fikrlar', lokal.ideas, srv ? (Number(srv.ideas)||0) : null)}
+          ${qator('Kontent', lokal.posts, srv ? (Number(srv.posts)||0) : null)}
         </div>
+        <div class="rp-cloud-msg">Telefon va Windowsda aynan shu email ko'rinishi kerak. Matnlar Google Sheetdan, reja va holatlar Firebase'dan sinxronlanadi.</div>
         <button class="rp-add-btn" data-action="cloud-force">Qayta yuborish</button>
         <button class="rp-add-btn" data-action="cloud-signout">Bulutdan chiqish</button>
       </div>`;
@@ -3506,7 +3519,7 @@ function renderImportScriptsModal(){
               <button class="rp-link-btn" data-action="cancel-scripts">Bekor qilish</button>
             </div>
           </div>` : `<button class="rp-save-btn" data-action="preview-scripts">Tekshirish</button>`}
-        <p class="rp-note rp-note-small">Matnlar shu qurilmada va zaxira faylida saqlanadi. Bulutga faqat qaysilari ishlatilgani yuboriladi.</p>
+        <p class="rp-note rp-note-small">Matnlarning o'zi Google Sheetda turadi; qurilmalar orasida reja, ishlatilgan holat va Sheet manzili sinxronlanadi.</p>
       </div>
     </div>`;
 }
