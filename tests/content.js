@@ -42,7 +42,7 @@ function serve(port){
   };
   const clear = () => page.evaluate(async () => {
     state.plans = []; state.tasks = []; state.ideas = [];
-    state.posts = []; state.scripts = []; state.usedScripts = [];
+    state.posts = []; state.scripts = []; state.usedScripts = []; state.shootBatches = [];
     state.importMode = 'auto'; state.importRaw = ''; state.scriptPreview = null;
     await commit();
   });
@@ -153,7 +153,7 @@ function serve(port){
   await page.evaluate(() => { state.tab = 'kontent'; render(); });
   let bui = await page.evaluate(() => document.body.innerText);
   check('tayyorlik sanasi ko\'rsatiladi', /gacha tayyor|tayyor emas/.test(bui), bui.slice(0,200));
-  check('matn navbati ko\'rsatiladi', /ta matn navbatda/.test(bui), bui.slice(0,200));
+  check('bo\'sh matn zaxirasi ko\'rsatiladi', /bo'sh matn zaxirada/.test(bui), bui.slice(0,200));
   check('reel ID kartada ko\'rinadi', /R012/.test(bui));
   check('funksiyalar joyida', true);
 
@@ -235,8 +235,8 @@ function serve(port){
   await page.evaluate((id) => { scriptToPost(id); state.showPick = false; }, p2);
   await page.waitForTimeout(250);
   check('olingan matn kontentga aylanadi', await page.evaluate(() => state.posts.length) === 1);
-  check('olingan matn ishlatilgan deb belgilanadi', await page.evaluate((id) => isScriptUsed(id), p2));
-  check('qolgan zaxira kamayadi', await page.evaluate(() => unusedScripts().length) === 2);
+  check('olingan matn endi bo\'sh zaxirada emas (rejalangan)', await page.evaluate((id) => !availableScripts().some(x => x.id === id), p2));
+  check('qolgan bo\'sh zaxira kamayadi', await page.evaluate(() => availableScripts().length) === 2);
 
   // Hammasi ishlatilgach
   await page.evaluate(() => { state.usedScripts = state.scripts.map(x => x.id); state.showPick = true; pickNextScript(false); render(); });
@@ -348,6 +348,19 @@ function serve(port){
   st = await page.evaluate(() => contentStats(toKey(new Date())));
   check('o\'tgan kundagi kontent zaxirani sun\'iy ko\'paytirmaydi', st.ready === 2, JSON.stringify(st));
 
+  const overview = await page.evaluate(() => {
+    state.contentStartDate = '2026-10-01';
+    state.posts = [
+      { id:'ov1', title:'Matn', date:'2026-10-01', scriptId:null, matnAt:1, videoAt:null, montajAt:null },
+      { id:'ov2', title:'Video', date:'2026-10-04', scriptId:null, matnAt:1, videoAt:1, montajAt:null },
+      { id:'ov3', title:'Montaj', date:'2026-10-06', scriptId:null, matnAt:1, videoAt:1, montajAt:1 },
+    ];
+    const stats = contentVisualStats('2026-09-18');
+    return { stats:{ total:stats.total, counts:stats.counts }, html:renderContentOverview('2026-09-18') };
+  });
+  check('vizual panel bosqichlarni yig\'ilib boradigan qilib sanaydi', overview.stats.total === 3 && overview.stats.counts.matn === 3 && overview.stats.counts.video === 2 && overview.stats.counts.montaj === 1, JSON.stringify(overview.stats));
+  check('vizual panel 12 haftalik sana xaritasini ko\'rsatadi', /12 haftalik reja/.test(overview.html) && /rp-overview-montaj/.test(overview.html), overview.html.slice(0, 300));
+
   group('MATNDAN KONTENT YARATISH');
   await clear();
   await page.evaluate(() => { prepareScriptImport("Arab tilida uch xil so'z bor va ular juda muhim hisoblanadi"); });
@@ -361,7 +374,7 @@ function serve(port){
   check('kontent yaratiladi', !!created, JSON.stringify(created));
   check('matn bosqichi darhol tayyor', !!created.matnAt);
   check('matn ID ga bog\'lanadi', created.scriptId === sid);
-  check('matn avtomatik ishlatilgan deb belgilanadi', await page.evaluate((id) => isScriptUsed(id), sid));
+  check('faqat rejalangan matn hali ishlatilgan deb belgilanmaydi', await page.evaluate((id) => !isScriptUsed(id), sid));
   check('video va montaj hali yo\'q', !created.videoAt && !created.montajAt);
 
   group('SAQLASH VA QAYTA YUKLASH');
@@ -369,7 +382,7 @@ function serve(port){
   const after = await page.evaluate(() => ({ posts: state.posts.length, scripts: state.scripts.length, used: state.usedScripts.length }));
   check('kontent diskdan qaytadi', after.posts === 1, JSON.stringify(after));
   check('matnlar diskdan qaytadi', after.scripts === 1, JSON.stringify(after));
-  check('ishlatilgan belgilari qaytadi', after.used === 1, JSON.stringify(after));
+  check('faqat rejalangan matn ishlatilgan deb saqlanmaydi', after.used === 0, JSON.stringify(after));
 
   group('BULUT: matnlar yuborilmaydi, belgilar yuboriladi');
   const cv = await page.evaluate(() => window.rejamGetLocal());
@@ -398,13 +411,15 @@ function serve(port){
   const ui = await page.evaluate(() => document.body.innerText);
   check('Kontent tabi bor', /Kontent/.test(ui));
   check('bosqich tugmalari chiqadi', await page.evaluate(() => document.querySelectorAll('[data-action="toggle-stage"]').length) >= 3);
-  check('matn navbati ko\'rinadi', /ta matn navbatda/.test(ui), ui.slice(0,200));
+  check('matn zaxirasi ko\'rinadi', /ta bo'sh matn zaxirada/.test(ui), ui.slice(0,200));
 
   group('ZANJIR: Sheet havolasini o\'qish');
   let u = await page.evaluate(() => sheetCsvUrl('https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit#gid=0'));
   check('oddiy havola CSV ga aylanadi', /\/1AbCdEfGhIjKlMnOpQrStUvWxYz012345\/gviz\/tq\?tqx=out:csv$/.test(u), String(u));
   u = await page.evaluate(() => sheetCsvUrl('https://docs.google.com/spreadsheets/d/e/2PACX-1vABCDEF/pubhtml'));
   check('nashr qilingan havola ham o\'qiladi', /\/d\/e\/2PACX-1vABCDEF\/pub\?output=csv$/.test(u), String(u));
+  check('nashr qilingan havola /d/e/pub turida taniladi', await page.evaluate(() => isPublishedSheetUrl('https://docs.google.com/spreadsheets/d/e/2PACX-1vABCDEF/pubhtml?gid=0')) === true);
+  check('oddiy edit havola nashr qilingan deb olinmaydi', await page.evaluate(() => isPublishedSheetUrl('https://docs.google.com/spreadsheets/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit')) === false);
   check('boshqa sayt havolasi rad etiladi',
     await page.evaluate(() => sheetCsvUrl('https://example.com/x.csv')) === null);
   check('bo\'sh havola rad etiladi', await page.evaluate(() => sheetCsvUrl('')) === null);
@@ -424,16 +439,18 @@ function serve(port){
   check('3 ta kontent yaratildi', ps.length === 3, JSON.stringify(ps));
   check('matn bosqichi tayyor, video yo\'q', ps.every(x => x.m && !x.v), JSON.stringify(ps));
   const ds = ps.map(x => x.d).sort();
-  check('bugundan boshlanadi', ds[0] === await page.evaluate(() => toKey(new Date())), JSON.stringify(ds));
+  check('rejalangan boshlanish sanasidan boshlanadi', ds[0] === await page.evaluate(() => splitStart(toKey(new Date()))), JSON.stringify(ds));
   check('kunlar ketma-ket va takrorlanmaydi', new Set(ds).size === 3, JSON.stringify(ds));
-  check('taqsimlangan matnlar ishlatilgan bo\'ladi', await page.evaluate(() => unusedScripts().length) === 2);
+  check('taqsimlangan matnlar rejalangan, lekin ishlatilmagan bo\'ladi', await page.evaluate(() => unusedScripts().length === 5 && availableScripts().length === 2 && plannedUnfilmedScriptIds().size === 3));
+  await page.evaluate(() => togglePostStage(state.posts[0].id, 'video'));
+  check('video olindi deb belgilansa matn ishlatilgan bo\'ladi', await page.evaluate(() => isScriptUsed(state.posts[0].scriptId)));
 
   // Band kunlar o'tkazib yuboriladi
   n = await page.evaluate(() => splitIntoDays(2));
   await page.waitForTimeout(250);
   const allD = await page.evaluate(() => state.posts.map(p => p.date).sort());
   check('ikkinchi taqsimlash band kunlarni bosmaydi', new Set(allD).size === 5, JSON.stringify(allD));
-  check('zaxirada matn qolmadi', await page.evaluate(() => unusedScripts().length) === 0);
+  check('qolgan matnlar rejalangan, ammo hali ishlatilmagan', await page.evaluate(() => unusedScripts().length === 4 && availableScripts().length === 0 && plannedUnfilmedScriptIds().size === 4));
   check('yo\'q matnni taqsimlab bo\'lmaydi', await page.evaluate(() => splitIntoDays(3)) === 0);
 
   group('ZANJIR: qaysi sanagacha tayyor');
@@ -479,7 +496,7 @@ function serve(port){
   await page.waitForTimeout(250);
   const zui = await page.evaluate(() => document.body.innerText);
   check('"...gacha tayyor" ko\'rinadi', /gacha tayyor/.test(zui), zui.slice(0,240));
-  check('matn navbati ko\'rinadi', /1\s*ta matn navbatda/.test(zui.replace(/\n/g,' ')), zui.slice(0,240));
+  check('bo\'sh matn zaxirasi ko\'rinadi', /1\s*ta bo'sh matn zaxirada/.test(zui.replace(/\n/g,' ')), zui.slice(0,240));
   check('jadval ulanmagani aytiladi', /jadval ulanmagan/.test(zui));
   check('"Kunlarga bo\'l" tugmasi bor', /Kunlarga bo'l/.test(zui));
 
@@ -504,47 +521,197 @@ function serve(port){
   const bk = await page.evaluate(() => JSON.parse(backupText()));
   check('havola zaxira faylida ham bor', typeof bk.sheetUrl === 'string' && /1TestSheetId/.test(bk.sheetUrl));
 
+  group('APP-FIRST MATN ZAXIRASI');
+  r = await page.evaluate(() => scriptsFromTable(parseTable(
+    'ID\tMavzu\tHook\tMatn\tStatus\n1\tArab tili\tBu juda uzun hook bo\'lishi mumkin, ammo matn emas\tAynan shu to\'liq Reels matni olinishi kerak\tDraft')).items);
+  check('aniq Matn sarlavhasi uzun Hookdan ustun', r.length === 1 && /Aynan shu/.test(r[0].text) && r[0].tag === 'Arab tili', JSON.stringify(r));
+
+  await page.evaluate(async () => {
+    state.scripts = []; state.usedScripts = [];
+    addAppScript('  Bir xil   REELS matni ');
+    const savedFetch = window.fetch;
+    window.fetch = async () => ({ ok:true, text: async () => 'Matn\n bir xil reels MATNI  ' });
+    state.sheetUrl = 'https://docs.google.com/spreadsheets/d/1TestSheetIdAbCdEfGhIjKl/edit';
+    await fetchSheet(true);
+    window.fetch = savedFetch;
+  });
+  check('app va Sheetdagi bir xil matn faqat bir marta qoladi', await page.evaluate(() => state.scripts.length) === 1);
+  check('app nusxasi ustun qoladi', await page.evaluate(() => state.scripts[0].source) === 'app');
+
+  await page.evaluate(async () => {
+    state.scripts = [
+      { id:scriptKey('App qoladi'), text:'App qoladi', tag:'', source:'app', createdAt:1 },
+      { id:scriptKey('Sheet ketadi'), text:'Sheet ketadi', tag:'', source:'sheet', createdAt:1 },
+    ];
+    const savedFetch = window.fetch;
+    window.fetch = async () => ({ ok:true, text: async () => 'Matn\nBoshqa sheet matni' });
+    await fetchSheet(true); window.fetch = savedFetch;
+  });
+  check('Sheetdan o\'chgan source:sheet zaxiradan chiqadi', await page.evaluate(() => !state.scripts.some(s => s.text === 'Sheet ketadi')));
+  check('Sheetdan o\'chsa ham source:app qoladi', await page.evaluate(() => state.scripts.some(s => s.text === 'App qoladi')));
+
+  // 1–5-oktabrning hammasi band bo'lsa, zaxira 6-oktabrdan boshlanadi.
+  const reserveWithPlan = await page.evaluate(() => {
+    state.contentStartDate = '2026-10-01';
+    state.posts = [1,2,3,4,5].map(n => ({ id:'oct' + n, title:'Reel', date:'2026-10-0' + n, scriptId:null, matnAt:1, videoAt:null, montajAt:null }));
+    return scriptReservePlan('2026-10-01', 20, 1);
+  });
+  check('1–5 oktabr band, 20 zaxira: 6–25 oktabr', reserveWithPlan.start === '2026-10-06' && reserveWithPlan.end === '2026-10-25', JSON.stringify(reserveWithPlan));
+  const reserveTwo = await page.evaluate(() => scriptReservePlan('2026-10-01', 20, 2));
+  check('kuniga 2 ta bo\'lsa sana to\'g\'ri qisqaradi', reserveTwo.start === '2026-10-06' && reserveTwo.end === '2026-10-15', JSON.stringify(reserveTwo));
+  const octoberOnly = await page.evaluate(() => {
+    state.contentStartDate = '2026-10-01';
+    state.posts = [{ id:'sep', title:'Sentabr', date:'2026-09-25', scriptId:null }, { id:'oct', title:'Oktyabr', date:'2026-10-05', scriptId:null }];
+    return scriptReservePlan('2026-09-18', 20, 1);
+  });
+  check('oktabr boshlanishi sentabrni unutib, oradagi bo\'sh kunlarni oladi', octoberOnly.start === '2026-10-01' && octoberOnly.end === '2026-10-21', JSON.stringify(octoberOnly));
+
+  group('TAYYOR VIDEO VA BO\'SH KUNLAR');
+  await clear();
+  const gaps = await page.evaluate(() => {
+    state.contentStartDate = '2026-10-01'; state.contentPerDay = 1;
+    state.scripts = [1,2,3,4].map(n => ({ id:'gap'+n, text:'Bo\'sh kun matni '+n, tag:'', source:'app', createdAt:n }));
+    state.posts = [
+      { id:'oct1', title:'Tayyor 1', date:'2026-10-01', scriptId:null, matnAt:1, videoAt:1, montajAt:null },
+      { id:'oct5', title:'Tayyor 5', date:'2026-10-05', scriptId:null, matnAt:1, videoAt:1, montajAt:null },
+    ];
+    const preview = nextFreeDates(4, parseKey(splitStart('2026-09-17')), 1);
+    const made = splitIntoDays(4);
+    return { preview, made, dates: state.posts.filter(p => /^gap/.test(p.scriptId || '')).map(p => p.date).sort() };
+  });
+  check('avto-taqsimlash 5-oktabrni chetlab o\'tadi', JSON.stringify(gaps.preview) === JSON.stringify(['2026-10-02','2026-10-03','2026-10-04','2026-10-06']), JSON.stringify(gaps.preview));
+  check('bo\'sh kunlarga matnlar joylandi', gaps.made === 4 && JSON.stringify(gaps.dates) === JSON.stringify(['2026-10-02','2026-10-03','2026-10-04','2026-10-06']), JSON.stringify(gaps));
+  const inferredStart = await page.evaluate(() => {
+    state.contentStartDate = '';
+    state.posts = [{ id:'first-oct', title:'Tayyor', date:'2026-10-01', scriptId:null }];
+    return splitStart('2026-09-17');
+  });
+  check('boshlanish sozlanmasa birinchi tayyor video sanasidan olinadi', inferredStart === '2026-10-01', inferredStart);
+
+  await clear();
+  const batchReady = await page.evaluate(() => {
+    state.posts = [{ id:'already', title:'Bor', date:'2026-10-05', scriptId:null, matnAt:1, videoAt:1, montajAt:null }];
+    const parsed = parseReadyDates('01.10.2026, 2026-10-05\n10/10/2026');
+    const result = addReadyDays('01.10.2026, 2026-10-05\n10/10/2026');
+    return { parsed, result, posts: state.posts.map(p => ({ d:p.date, v:!!p.videoAt })).sort((a,b) => a.d.localeCompare(b.d)) };
+  });
+  check('tayyor kunlar bir oynada turli sana shaklida olinadi', JSON.stringify(batchReady.parsed) === JSON.stringify(['2026-10-01','2026-10-05','2026-10-10']), JSON.stringify(batchReady));
+  check('tayyor kun takrorlanmaydi va video holatida saqlanadi', batchReady.result.added === 2 && batchReady.result.skipped === 1 && batchReady.posts.every(p => p.v), JSON.stringify(batchReady));
+
+  await clear();
+  const manualDate = await page.evaluate(() => {
+    state.scripts = [{ id:'choose', text:'Istalgan sanaga qo\'yiladigan matn', tag:'', source:'app', createdAt:1 }];
+    const ok = scheduleScriptToDate('choose', '2026-11-05');
+    return { ok, date: state.posts[0] && state.posts[0].date, used: isScriptUsed('choose') };
+  });
+  check('matn istalgan tanlangan kunga qo\'yiladi', manualDate.ok && manualDate.date === '2026-11-05' && !manualDate.used, JSON.stringify(manualDate));
+  await page.evaluate(() => { state.tab = 'kontent'; render(); });
+  check('jadval kartasidan matnni ko\'rish tugmasi bor', await page.evaluate(() => /Matnni ko'rish/.test(document.body.innerText)));
+  await page.evaluate(() => { state.viewingScriptId = 'choose'; state.showScriptViewer = true; render(); });
+  check('teleprompter oynasida to\'liq matn va nusxa tugmasi bor', await page.evaluate(() => /Istalgan sanaga qo'yiladigan matn/.test(document.body.innerText) && /Teleprompter uchun nusxa olish/.test(document.body.innerText)));
+  await page.evaluate(() => { state.showScriptViewer = false; state.viewingScriptId = null; });
+  const contentSearch = await page.evaluate(() => { state.contentQuery = 'istalgan sanaga'; return renderContentSearchResults('2026-10-01'); });
+  check('1-2 so\'z bilan qidiruv rejalangan sanani topadi', /5-Noyabr/.test(contentSearch) && /Matnni ko'rish/.test(contentSearch), contentSearch);
+  await page.evaluate(() => { state.tab = 'kontent'; state.showLibrary = true; render(); });
+  await page.waitForTimeout(120);
+  check('kutubxonada nusxa olish tugmasi bor', await page.evaluate(() => /Nusxa olish/.test(document.body.innerText)));
+  check('iPhone fallback copy natijasini tekshiradi', await page.evaluate(() => {
+    const src = fallbackCopy.toString();
+    return /setSelectionRange/.test(src) && /execCommand\('copy'\) === true/.test(src) && /return copied/.test(src);
+  }));
+  await page.evaluate(() => { state.showLibrary = false; state.posts = [
+    { id:'m1', title:'Oktyabr', date:'2026-10-01', scriptId:null, matnAt:1, videoAt:null, montajAt:null },
+    { id:'m2', title:'Noyabr', date:'2026-11-01', scriptId:null, matnAt:1, videoAt:null, montajAt:null },
+  ]; render(); });
+  check('kelajak rejalari oylar bo\'yicha ajraladi', await page.evaluate(() => /Oktabr\s*2026/.test(document.body.innerText) && /Noyabr\s*2026/.test(document.body.innerText)));
+
+  group("S'YOMKA SESSIYASI VA SOCHISH");
+  await clear();
+  const shoot = await page.evaluate(() => {
+    state.scripts = [1,2,3,4,5].map(n => ({ id:'shoot'+n, text:'S\'yomka matni '+n, tag:'', source:'sheet', createdAt:n }));
+    const batch = createShootBatch({ label:'Qora kostyum', outfit:'Qora', location:'Ofis', count:5, gapDays:5, startDate:'2026-10-01' });
+    const before = { reserved:shootingCount(), available:availableScripts().length, code:batch && batch.code };
+    batch.scriptIds.slice(0, 4).forEach(id => toggleBatchShot(batch.id, id));
+    const scheduled = finalizeShootBatch(batch.id);
+    return { before, scheduled, dates:state.posts.map(p => p.date).sort(), used:state.usedScripts.length, available:availableScripts().length, refs:state.posts.map(p => p.ref) };
+  });
+  check("5 ta matn sessiyada band qilinadi", shoot.before.reserved === 5 && shoot.before.available === 0 && /^SY-/.test(shoot.before.code), JSON.stringify(shoot));
+  check("faqat olingan 4 video sochib joylanadi", shoot.scheduled === 4 && JSON.stringify(shoot.dates) === JSON.stringify(['2026-10-01','2026-10-06','2026-10-11','2026-10-16']), JSON.stringify(shoot));
+  check("olinmagan beshinchi matn zaxirada qoladi va kod postda bor", shoot.used === 4 && shoot.available === 1 && shoot.refs.every(r => /^SY-/.test(r)), JSON.stringify(shoot));
+
+  const plannedShoot = await page.evaluate(() => {
+    state.shootBatches = []; state.usedScripts = [];
+    state.scripts = Array.from({length:9}, (_,i) => ({ id:'plan-sc-'+i, text:'Rejadagi matn '+(i+1), tag:'', source:'app', createdAt:i+1 }));
+    state.posts = Array.from({length:9}, (_,i) => ({
+      id:'plan-post-'+i, title:'Rejadagi matn '+(i+1), date:'2026-10-'+String(i+1).padStart(2,'0'), scriptId:'plan-sc-'+i,
+      note:'', createdAt:1, editedAt:1, matnAt:1, videoAt:null, montajAt:null
+    }));
+    const picked = autoPlannedShootPosts(3, 'Oq futbolka', 'Ofis', '2026-09-18');
+    const batch = createPlannedShootBatch({ count:3, outfit:'Oq futbolka', location:'Ofis' });
+    toggleBatchShot(batch.id, batch.postIds[0]); toggleBatchShot(batch.id, batch.postIds[2]);
+    const beforeDates = state.posts.map(p => p.date).join(',');
+    const done = finalizeShootBatch(batch.id);
+    return { picked:picked.map(p => p.date), batchDates:batch.postIds.map(id => state.posts.find(p => p.id === id).date), beforeDates,
+      afterDates:state.posts.map(p => p.date).join(','), done, total:state.posts.length,
+      filmed:state.posts.filter(p => p.videoAt).length, tagged:state.posts.filter(p => p.outfit === 'Oq futbolka').length,
+      unshotReturned:plannedShootPool('2026-09-18').some(p => p.id === batch.postIds[1]) };
+  });
+  check('syomka matnlari rejaning turli joylaridan avtomatik olinadi', JSON.stringify(plannedShoot.picked) === JSON.stringify(['2026-10-01','2026-10-05','2026-10-09']), JSON.stringify(plannedShoot));
+  check('video olinganda chiqish sanalari o\'zgarmaydi', plannedShoot.done === 2 && plannedShoot.total === 9 && plannedShoot.beforeDates === plannedShoot.afterDates && plannedShoot.filmed === 2 && plannedShoot.tagged === 2, JSON.stringify(plannedShoot));
+  check('olinmagan matn keyingi syomka tanloviga qaytadi', plannedShoot.unshotReturned === true, JSON.stringify(plannedShoot));
+
+  const meta = await page.evaluate(() => {
+    state.posts = [{ id:'oldmeta', title:'Eski oq video', date:'2026-10-01', scriptId:null, note:'', outfit:'Oq futbolka', location:'Ofis', createdAt:1, editedAt:1, matnAt:1, videoAt:1, montajAt:null }];
+    state.shootBatches = [{ id:'oldbatch', code:'SY-OLD-01', label:'Eski', outfit:'  oq   futbolka ', location:'OFIS', scriptIds:['shoot1'], shotIds:['shoot1'], gapDays:5, startDate:'2026-10-01', status:'scheduled', scheduledPostIds:['oldmeta'], createdAt:1 }];
+    return {
+      outfits:shootMetaOptions('outfit'), locations:shootMetaOptions('location'),
+      canonical:canonicalShootMeta('outfit', 'OQ FUTBOLKA'),
+      dates:scatterFreeDates(2, parseKey('2026-10-02'), 5, { outfit:'Oq futbolka', location:'Boshqa joy' })
+    };
+  });
+  check('kiyim va lokatsiya avvalgi qiymatlardan takrorlanmas ro\'yxat bo\'ladi', meta.outfits.length === 1 && meta.locations.length === 1 && meta.canonical === meta.outfits[0], JSON.stringify(meta));
+  check('bir xil kiyim yaqin sanaga ketma-ket qo\'yilmaydi', JSON.stringify(meta.dates) === JSON.stringify(['2026-10-06','2026-10-11']), JSON.stringify(meta.dates));
+
   group('OYLIK EKSPORT');
   await clear();
   await page.evaluate(() => {
     state.scripts = [
-      { id:'ex1', text:"Arab tilida eng ko'p ishlatiladigan uch so'z bor.\nBirinchisi kitob, ikkinchisi qalam, uchinchisi daftar. Bu matn 70 belgidan ancha uzun bo'lishi kerak.", tag:'', createdAt:1 },
-      { id:'ex2', text:"Fe'l nima? Harakatni bildiradi.", tag:'', createdAt:2 },
+      { id:'ex1', text:"Arab tilida eng ko'p ishlatiladigan uch so'z bor.\nBirinchisi kitob, ikkinchisi qalam, uchinchisi daftar. Bu matn 70 belgidan ancha uzun bo'lishi kerak.", tag:'', source:'app', createdAt:1 },
+      { id:'ex2', text:"Fe'l nima? Harakatni bildiradi.", tag:'', source:'app', createdAt:2 },
     ];
     state.posts = [
       { id:'o1', title:"Arab tilida eng ko'p ishlatiladigan uch so'z bor. Birinchisi kitob, ik", ref:'', date:'2026-10-02', scriptId:'ex1', note:'', createdAt:1, editedAt:1, matnAt:1, videoAt:1, montajAt:1 },
       { id:'o2', title:"Fe'l nima?", ref:'', date:'2026-10-01', scriptId:'ex2', note:'', createdAt:1, editedAt:1, matnAt:1, videoAt:null, montajAt:null },
-      { id:'o3', title:'Qo\'lda yozilgan', ref:'', date:'2026-10-05', scriptId:null, note:'', createdAt:1, editedAt:1, matnAt:1, videoAt:1, montajAt:null },
-      { id:'n1', title:'Noyabr', ref:'', date:'2026-11-03', scriptId:null, note:'', createdAt:1, editedAt:1, matnAt:1, videoAt:null, montajAt:null },
+      { id:'o3', title:"Qo'lda yozilgan", ref:'', date:'2026-10-05', scriptId:null, note:'', createdAt:1, editedAt:1, matnAt:1, videoAt:1, montajAt:null },
+      { id:'n1', title:'Noyabrdagi', ref:'', date:'2026-11-03', scriptId:null, note:'', createdAt:1, editedAt:1, matnAt:1, videoAt:null, montajAt:null },
     ];
     return commit();
   });
   await page.waitForTimeout(200);
   let ex = await page.evaluate(() => buildMonthExport('2026-10', false));
-  check('faqat shu oy kiradi', ex.count === 3 && !/Noyabr/.test(ex.text), ex.count + ' ' + ex.text.slice(0,80));
-  check('kunlar tartib bilan', ex.text.indexOf('1-') < ex.text.indexOf('2-') && ex.text.indexOf('2-') < ex.text.indexOf('5-'), ex.text.slice(0,300));
-  check('TO\'LIQ matn chiqadi (qisqartirilgan sarlavha emas)', /70 belgidan ancha uzun/.test(ex.text), ex.text.slice(0,300));
-  check('ko\'p qatorli matn saqlanadi', /bor\.\nBirinchisi/.test(ex.text));
-  check('qo\'lda yozilgan kontent ham kiradi', /Qo'lda yozilgan/.test(ex.text));
-  check('hafta kuni yoziladi', /Payshanba|Juma|Dushanba/.test(ex.text), ex.text.slice(0,200));
-  check('holat yoziladi', /tayyor/.test(ex.text) && /video olingan/.test(ex.text));
-  check('bo\'sh kunlar hisoblanadi', ex.empty.length === 28 && ex.daysInMonth === 31, ex.empty.length + '/' + ex.daysInMonth);
-  check('ko\'rsatmasiz variantda ChatGPT matni yo\'q', !/ChatGPT|story/i.test(ex.text));
-
+  check('eksport: faqat shu oy kiradi', ex.count === 3 && !/Noyabrdagi/.test(ex.text), ex.count + ' ' + ex.text.slice(0,80));
+  check('eksport: kunlar tartib bilan', ex.text.indexOf('1-Oktabr') < ex.text.indexOf('2-Oktabr') && ex.text.indexOf('2-Oktabr') < ex.text.indexOf('5-Oktabr'), ex.text.slice(0,300));
+  check('eksport: TO\'LIQ matn (qisqartirilgan sarlavha emas)', /70 belgidan ancha uzun/.test(ex.text));
+  check('eksport: ko\'p qatorli matn saqlanadi', /bor\.\nBirinchisi/.test(ex.text));
+  check('eksport: qo\'lda yozilgan kontent ham kiradi', /Qo'lda yozilgan/.test(ex.text));
+  check('eksport: hafta kuni yoziladi', /Payshanba/.test(ex.text), ex.text.slice(0,200));
+  check('eksport: holat yoziladi', /\(tayyor\)/.test(ex.text) && /\(video olingan\)/.test(ex.text) && /\(matn tayyor\)/.test(ex.text));
+  check('eksport: bo\'sh kunlar', ex.empty.length === 28 && ex.daysInMonth === 31, ex.empty.length + '/' + ex.daysInMonth);
+  check('eksport: ko\'rsatmasiz variantda ChatGPT matni yo\'q', !/story|Telegram/i.test(ex.text));
   ex = await page.evaluate(() => buildMonthExport('2026-10', true));
-  check('ko\'rsatma qo\'shilganda story va Telegram so\'raladi', /story/.test(ex.text) && /Telegram/.test(ex.text));
-  check('bo\'sh oy', await page.evaluate(() => buildMonthExport('2027-01', false).count) === 0);
-  check('oylar ro\'yxati', JSON.stringify(await page.evaluate(() => exportMonths())) === '["2026-10","2026-11"]');
-
-  await page.evaluate(() => { state.tab = 'kontent'; render(); });
+  check('eksport: ko\'rsatma bilan story va Telegram so\'raladi', /story/.test(ex.text) && /Telegram/.test(ex.text));
+  check('eksport: bo\'sh oy', await page.evaluate(() => buildMonthExport('2027-01', false).count) === 0);
+  check('eksport: oylar ro\'yxati', JSON.stringify(await page.evaluate(() => exportMonths())) === '["2026-10","2026-11"]');
+  check('eksport: nusxa iPhone usulidan foydalanadi', await page.evaluate(() => /fallbackCopy\(ex\.text\)/.test(copyMonthExport.toString())));
+  await page.evaluate(() => { state.tab = 'kontent'; state.showExport = false; render(); });
   check('eksport tugmasi bor', await page.evaluate(() => /Oylik rejani eksport qilish/.test(document.body.innerText)));
   await page.evaluate(() => { state.showExport = true; state.exportMonth = '2026-10'; render(); });
   await page.waitForTimeout(200);
   const eui = await page.evaluate(() => document.body.innerText);
-  check('oyna oy tanlovi va sonni ko\'rsatadi', /Oktabr 2026/.test(eui) && /3 ta/.test(eui), eui.slice(0,300));
+  check('eksport oynasi oy va sonni ko\'rsatadi', /Oktabr 2026/.test(eui) && /3 ta/.test(eui), eui.slice(0,300));
   await page.click('[data-action="export-prompt"]');
   await page.waitForTimeout(150);
-  check('ko\'rsatma belgisini o\'chirib bo\'ladi', await page.evaluate(() => state.exportPrompt) === false);
+  check('eksport: ko\'rsatma belgisini o\'chirib bo\'ladi', await page.evaluate(() => state.exportPrompt) === false);
   await page.evaluate(() => { state.showExport = false; render(); });
 
   check('konsolda xato yo\'q', errors.length === 0, errors.join(' | '));
