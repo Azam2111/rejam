@@ -167,7 +167,7 @@ function splitScripts(raw, mode){
   return { items, header: null, mode: m };
 }
 
-// Aniq sarlavha bo'lsa taxmin qilmaymiz. Aks holda eski uzunlik qoidasi ishlaydi.
+// Qaysi ustun matn, qaysisi mavzu - o'rtacha uzunlikka qarab hal qilinadi.
 // Natija { items, header } - sarlavha tashlangan bo'lsa, u YASHIRILMAYDI,
 // foydalanuvchi ko'rib chiqish oynasida ko'radi va xato bo'lsa sezadi.
 function scriptsFromTable(rows){
@@ -176,16 +176,7 @@ function scriptsFromTable(rows){
 
   const pick = (r, col) => (r[col] || '').trim();
   let textCol = 0;
-  let tagCol = -1;
-  const normHeader = v => String(v == null ? '' : v).trim().toLocaleLowerCase('uz').replace(/\s+/g, ' ');
-  const headers = rows[0].map(normHeader);
-  const exactText = new Set(['matn', 'reels matni', 'draft matn', 'script']);
-  const exactTag = new Set(['mavzu', 'kategoriya', 'tag']);
-  const namedTextCol = headers.findIndex(h => exactText.has(h));
-  if (namedTextCol >= 0) {
-    textCol = namedTextCol;
-    tagCol = headers.findIndex(h => exactTag.has(h));
-  } else if (width > 1) {
+  if (width > 1) {
     const avg = [];
     for (let c = 0; c < width; c++) {
       let sum = 0, cnt = 0;
@@ -199,9 +190,8 @@ function scriptsFromTable(rows){
   // gap belgilari yo'q, va qolgan qatorlarning MEDIANASI undan ancha uzun.
   // Median o'rtachadan yaxshiroq - bitta uzun matn qarorni buzmaydi.
   let body = rows, header = null;
-  if (namedTextCol >= 0) { body = rows.slice(1); header = pick(rows[0], textCol); }
   const first = pick(rows[0], textCol);
-  if (namedTextCol < 0 && rows.length >= 2 && first && first.length <= 25 && !/[.!?\n]/.test(first)) {
+  if (rows.length >= 2 && first && first.length <= 25 && !/[.!?\n]/.test(first)) {
     const rest = rows.slice(1).map(r => pick(r, textCol).length).filter(n => n > 0).sort((a, b) => a - b);
     const med = rest.length ? rest[Math.floor(rest.length / 2)] : 0;
     if (med > first.length * 3) { body = rows.slice(1); header = first; }
@@ -212,8 +202,7 @@ function scriptsFromTable(rows){
     const text = pick(r, textCol);
     if (!text) continue;
     let tag = '';
-    if (tagCol >= 0 && pick(r, tagCol)) tag = pick(r, tagCol);
-    for (let c = 0; !tag && c < width; c++) {
+    for (let c = 0; c < width; c++) {
       if (c === textCol) continue;
       const v = pick(r, c);
       if (v && v.length <= 60) { tag = v; break; }
@@ -432,29 +421,14 @@ let state = {
   ideas: [],
   categories: [],
   posts: [],                 // kontent quvuri
-  scripts: [],               // matn kutubxonasi Sheetda; Firebase'ga katta matnlar yuborilmaydi
+  scripts: [],               // matn kutubxonasi (bulutga yuborilmaydi - pastdagi izohga qarang)
   usedScripts: [],           // ishlatilgan matn ID'lari - BULUTGA yuboriladi
-  shootBatches: [],          // s'yomka sessiyalari: kichik meta sifatida qurilmalar orasida sinxronlanadi
   showLibrary: false,
   showImportScripts: false,
-  showAddScript: false,
-  showQuickAdd: false,
-  appScriptDraft: '',
   showAddPost: false,
-  showReadyDays: false,
-  readyDaysDraft: '',
-  readyDaysSelected: [],       // modal ichidagi vaqtinchalik ✓ tanlovlar
-  readyDaysMonth: '',
-  showShootBatch: false,
-  shootBatchDraft: null,
-  showScheduleScript: false,
-  schedulingScriptId: null,
-  showScriptViewer: false,
-  viewingScriptId: null,
   editingPostId: null,
   libQuery: '',
   libFilter: 'yangi',        // yangi | hammasi | ishlatilgan
-  contentQuery: '',
   scriptPreview: null,
   importRaw: '',
   importMode: 'auto',
@@ -467,14 +441,13 @@ let state = {
   sheetUrl: '',
   sheetFetchedAt: 0,
   sheetBusy: false,
-  sheetWriteBusy: false,
   sheetMsg: null,
   showSheet: false,
   showSplit: false,
-  showContentSettings: false,
   splitCount: '',
-  contentPerDay: 1,
-  contentStartDate: '',
+  showExport: false,
+  exportMonth: '',
+  exportPrompt: true,
   showPick: false,
   showPastPosts: false,
   newCatName: '',
@@ -521,7 +494,7 @@ function safeParse(s, fallback){ try { return s ? JSON.parse(s) : fallback; } ca
 // Prinsip: IndexedDB kanonik manba. localStorage tezkor cache/fallback.
 // Bo'shlik hech qachon "authority" emas - faqat revision hal qiladi.
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 4;
 const DB_NAME = 'rejam-db', DB_STORE = 'kv';
 const IDB_MAIN = 'snapshot-v3';
 const IDB_PRE_MIGRATION = 'pre-migration-v2';
@@ -767,8 +740,6 @@ function validatePost(raw, seen, issues){
     date: isValidDateKey(raw.date) ? raw.date : null,
     scriptId: (typeof raw.scriptId === 'string' && ID_RE.test(raw.scriptId)) ? raw.scriptId : null,
     note: cleanText(raw.note, 2000),
-    outfit: cleanText(raw.outfit, 60).trim(),
-    location: cleanText(raw.location, 60).trim(),
     createdAt: createdAt === null ? Date.now() : createdAt,
     editedAt: editedAt === null ? undefined : editedAt,
   };
@@ -797,7 +768,6 @@ function validateScript(raw, seen, issues){
     id: cleanId(raw.id, seen, issues, 'Matn'),
     text,
     tag: cleanText(raw.tag, 60).trim(),
-    source: raw.source === 'sheet' ? 'sheet' : 'app',
     createdAt: createdAt === null ? Date.now() : createdAt,
   };
 }
@@ -822,8 +792,8 @@ function validateEnvelope(raw){
   if (!raw || typeof raw !== 'object') return { ok:false, issues:['Fayl obyekt emas'] };
   const arr = v => Array.isArray(v) ? v : null;
   const rp = arr(raw.plans), rt = arr(raw.tasks), ri = arr(raw.ideas);
-  const ro = arr(raw.posts), rs = arr(raw.scripts), rb = arr(raw.shootBatches);
-  if (!rp && !rt && !ri && !ro && !rs && !rb) return { ok:false, issues:['Ichida plans/tasks/ideas ro\'yxati yo\'q'] };
+  const ro = arr(raw.posts), rs = arr(raw.scripts);
+  if (!rp && !rt && !ri && !ro && !rs) return { ok:false, issues:['Ichida plans/tasks/ideas ro\'yxati yo\'q'] };
   if (rp && rp.length > 5000) return { ok:false, issues:['Juda katta fayl (5000+ reja)'] };
   if (rs && rs.length > 20000) return { ok:false, issues:['Juda katta fayl (20000+ matn)'] };
 
@@ -848,18 +818,7 @@ function validateEnvelope(raw){
   const tasks = (rt || []).map(x => validateTask(x, seen, issues)).filter(Boolean);
   const ideas = (ri || []).map(x => validateIdea(x, seen, issues)).filter(Boolean);
   const posts = (ro || []).map(x => validatePost(x, seen, issues)).filter(Boolean);
-  // Eski backupdagi source yo'q qiymati app deb olinadi. Bir xil matn ikki
-  // manbadan kelsa bitta qoladi; app nusxasi sheet nusxasidan ustun.
-  const scriptByKey = new Map();
-  for (const rawScript of (rs || [])) {
-    const script = validateScript(rawScript, seen, issues);
-    if (!script) continue;
-    const key = scriptKey(script.text);
-    const previous = scriptByKey.get(key);
-    if (!previous || (previous.source === 'sheet' && script.source === 'app')) scriptByKey.set(key, script);
-  }
-  const scripts = Array.from(scriptByKey.values());
-  const shootBatches = (rb || []).map(x => validateShootBatch(x, seen, issues)).filter(Boolean);
+  const scripts = (rs || []).map(x => validateScript(x, seen, issues)).filter(Boolean);
 
   // Ishlatilgan matn ID'lari - faqat haqiqatan mavjud ID shakli o'tadi
   const usedScripts = [];
@@ -882,10 +841,8 @@ function validateEnvelope(raw){
       revision: revision === null || revision < 0 ? 0 : Math.floor(revision),
       updatedAt,
       deviceId: cleanText(raw.deviceId, 64) || deviceId(),
-      plans, tasks, ideas, categories: cats, posts, scripts, usedScripts, shootBatches,
+      plans, tasks, ideas, categories: cats, posts, scripts, usedScripts,
       sheetUrl: cleanText(raw.sheetUrl, 400).trim(),
-      contentPerDay: Math.max(1, Math.min(10, Math.floor(Number(raw.contentPerDay) || 1))),
-      contentStartDate: isValidDateKey(raw.contentStartDate) ? raw.contentStartDate : '',
     },
     counts: countsOf({ plans, tasks, ideas, posts, scripts }),
   };
@@ -917,10 +874,8 @@ function currentEnvelope(bumpRevision){
     updatedAt: Date.now(),
     deviceId: deviceId(),
     plans: state.plans, tasks: state.tasks, ideas: state.ideas, categories: state.categories,
-    posts: state.posts, scripts: state.scripts, usedScripts: state.usedScripts, shootBatches: state.shootBatches,
+    posts: state.posts, scripts: state.scripts, usedScripts: state.usedScripts,
     sheetUrl: state.sheetUrl,
-    contentPerDay: state.contentPerDay,
-    contentStartDate: state.contentStartDate,
   };
 }
 
@@ -984,12 +939,10 @@ let cloudPrev = null;          // oxirgi marta bulutga bildirilgan lokal nusxa (
 function cloudView(){
   // DIQQAT: state.scripts ATAYLAB yuborilmaydi. 1000+ matn har qurilma kirganda
   // 1000 ta alohida hujjat o'qish/yozish degani - sekin va keraksiz. Matnlar sizning
-  // Google jadvalingizda va zaxira faylida turadi. Bulutga matn ID'lari,
-  // kontent holati, Sheet manzili va kichik s'yomka metasi boradi.
+  // Google jadvalingizda va zaxira faylida turadi. Bulutga faqat QAYSILARI
+  // ishlatilgani (usedScripts) boradi - eng muhimi va eng kichigi shu.
   return { plans: state.plans, tasks: state.tasks, ideas: state.ideas,
-           posts: state.posts, categories: state.categories, usedScripts: state.usedScripts,
-           shootBatches: state.shootBatches, sheetUrl:state.sheetUrl,
-           contentPerDay:state.contentPerDay, contentStartDate:state.contentStartDate };
+           posts: state.posts, categories: state.categories, usedScripts: state.usedScripts };
 }
 function deepCopy(o){ return JSON.parse(JSON.stringify(o)); }
 
@@ -1042,12 +995,11 @@ window.rejamGetLocal = function(){ return cloudView(); };
 // Bulut yozadi. Ishonchsiz manba - hamma narsa validateEnvelope'dan o'tadi.
 window.rejamApplyCloud = function(patch){
   if (!patch || typeof patch !== 'object') return;
-  const oldSheetUrl = state.sheetUrl;
   const merged = Object.assign(cloudView(), patch);
   const v = validateEnvelope({
     schemaVersion: SCHEMA_VERSION,
     plans: merged.plans, tasks: merged.tasks, ideas: merged.ideas, categories: merged.categories,
-    posts: merged.posts, scripts: state.scripts, usedScripts: merged.usedScripts, shootBatches: merged.shootBatches,
+    posts: merged.posts, scripts: state.scripts, usedScripts: merged.usedScripts,
   });
   if (!v.ok) { console.warn('[Rejam] bulutdan kelgan ma\'lumot rad etildi:', v.issues); return; }
 
@@ -1081,10 +1033,6 @@ window.rejamApplyCloud = function(patch){
   state.ideas = v.envelope.ideas;
   state.posts = v.envelope.posts || [];
   if (Array.isArray(patch.usedScripts)) state.usedScripts = v.envelope.usedScripts || [];
-  if (Array.isArray(patch.shootBatches)) state.shootBatches = v.envelope.shootBatches || [];
-  if (typeof patch.sheetUrl === 'string') state.sheetUrl = patch.sheetUrl;
-  if (patch.contentPerDay != null) state.contentPerDay = Math.max(1, Math.min(10, Math.floor(Number(patch.contentPerDay) || 1)));
-  if (typeof patch.contentStartDate === 'string') state.contentStartDate = isValidDateKey(patch.contentStartDate) ? patch.contentStartDate : '';
   ensureEditedAt(null);
 
   // Diskka yozamiz, lekin bulutga QAYTA yubormaymiz - aks holda cheksiz aylanma
@@ -1092,10 +1040,6 @@ window.rejamApplyCloud = function(patch){
   writeQueue = writeQueue.then(() => persistEnvelope(env)).catch(() => {});
   cloudPrev = deepCopy(cloudView());
   render();
-  if (state.sheetUrl && state.sheetUrl !== oldSheetUrl) {
-    const c = window.rejamCloud;
-    if (isPublishedSheetUrl(state.sheetUrl) || (c && c.sheetsConnected)) setTimeout(() => fetchSheet(true), 0);
-  }
 };
 
 window.rejamLocalSavedAt = function(){ return revisionCounter; };
@@ -1179,10 +1123,7 @@ async function bootstrapStorage(){
     state.posts = best.env.posts || [];
     state.scripts = best.env.scripts || [];
     state.usedScripts = best.env.usedScripts || [];
-    state.shootBatches = best.env.shootBatches || [];
     state.sheetUrl = best.env.sheetUrl || '';
-    state.contentPerDay = best.env.contentPerDay || 1;
-    state.contentStartDate = best.env.contentStartDate || '';
     revisionCounter = best.env.revision;
     if (best.issues && best.issues.length) state.readErrors.push(...best.issues.slice(0, 5));
 
@@ -1210,11 +1151,7 @@ async function bootstrapStorage(){
     }
   }
 
-  // Eski versiya kunga qo'yilgan matnlarni ham "ishlatilgan" degan edi.
-  // Ular hali video olinmagan bo'lsa, faqat rejalangan deb qolishi kerak.
-  const usageMigrated = reconcileScheduledScriptUsage();
   ensureEditedAt(best ? best.env : null);
-  if (usageMigrated) await commit();
   cloudPrev = deepCopy(cloudView());
 
   state.booted = true;
@@ -1223,7 +1160,7 @@ async function bootstrapStorage(){
 
   const cloud = window.rejamCloud;
   if (cloud && cloud.enabled) {
-    cloud.onChange = () => { if (state.showBackup || state.showSheet) render(); };
+    cloud.onChange = () => { if (state.showBackup) render(); };
     if (cloud.resume) cloud.resume();
   }
 }
@@ -1385,7 +1322,7 @@ async function confirmImport(){
   // 1) Importdan oldingi holatni saqlaymiz
   let recovered = false;
   try {
-    await idbSet(IDB_PRE_IMPORT, currentEnvelope(false));
+    await idbSet(IDB_PRE_IMPORT, { savedAt: Date.now(), plans: state.plans, tasks: state.tasks, ideas: state.ideas });
     recovered = true;
   } catch(e){}
   if (!recovered) {
@@ -1395,9 +1332,10 @@ async function confirmImport(){
 
   // 2) Atomik yozamiz
   revisionCounter = Math.max(revisionCounter, env.revision) + 1;
-  const toWrite = Object.assign({}, env, {
-    schemaVersion: SCHEMA_VERSION, revision: revisionCounter, updatedAt: Date.now(), deviceId: deviceId(),
-  });
+  const toWrite = {
+    schemaVersion: SCHEMA_VERSION, revision: revisionCounter, updatedAt: Date.now(),
+    deviceId: deviceId(), plans: env.plans, tasks: env.tasks, ideas: env.ideas,
+  };
   let ok = false;
   try { await idbSet(IDB_MAIN, toWrite); ok = true; } catch(e){}
   if (!ok) { state.importPreview = { error: 'Yozib bo\'lmadi. Hozirgi ma\'lumotingiz o\'zgarmadi.' }; render(); return; }
@@ -1412,11 +1350,7 @@ async function confirmImport(){
 
   // 4) Faqat endi UI holatini almashtiramiz
   state.plans = env.plans; state.tasks = env.tasks; state.ideas = env.ideas;
-  state.categories = env.categories || []; state.posts = env.posts || [];
-  state.scripts = env.scripts || []; state.usedScripts = env.usedScripts || [];
-  state.shootBatches = env.shootBatches || [];
-  state.sheetUrl = env.sheetUrl || ''; state.contentPerDay = env.contentPerDay || 1;
-  state.contentStartDate = env.contentStartDate || '';
+  state.categories = env.categories || [];
   try { localStorage.setItem(LS_ENVELOPE, JSON.stringify(toWrite)); } catch(e){}
   state.importPreview = null;
   state.showBackup = false;
@@ -1430,10 +1364,6 @@ async function revertImport(){
   try { prev = await idbGet(IDB_PRE_IMPORT); } catch(e){}
   if (!prev) { toast('Qaytarish nuqtasi topilmadi'); return; }
   state.plans = prev.plans || []; state.tasks = prev.tasks || []; state.ideas = prev.ideas || [];
-  state.categories = prev.categories || []; state.posts = prev.posts || []; state.scripts = prev.scripts || [];
-  state.usedScripts = prev.usedScripts || []; state.sheetUrl = prev.sheetUrl || '';
-  state.shootBatches = prev.shootBatches || [];
-  state.contentPerDay = prev.contentPerDay || 1; state.contentStartDate = prev.contentStartDate || '';
   state.canRevertImport = false;
   await commit();
   render();
@@ -1884,19 +1814,13 @@ function render(){
     ${state.showAddTask ? renderAddTaskModal() : ''}
     ${state.showBackup ? renderBackupModal() : ''}
     ${state.showCapture ? renderCaptureModal() : ''}
-    ${state.showQuickAdd ? renderQuickAddModal() : ''}
-    ${state.showAddScript ? renderAddScriptModal() : ''}
     ${state.showAddPost ? renderAddPostModal(today) : ''}
-    ${state.showReadyDays ? renderReadyDaysModal() : ''}
-    ${state.showShootBatch ? renderShootBatchModal(today) : ''}
-    ${state.showScheduleScript ? renderScheduleScriptModal(today) : ''}
-    ${state.showScriptViewer ? renderScriptViewerModal() : ''}
     ${state.showLibrary ? renderLibraryModal() : ''}
     ${state.showImportScripts ? renderImportScriptsModal() : ''}
     ${state.showPick ? renderPickModal() : ''}
     ${state.showSheet ? renderSheetModal() : ''}
     ${state.showSplit ? renderSplitModal() : ''}
-    ${state.showContentSettings ? renderContentSettingsModal() : ''}
+    ${state.showExport ? renderExportModal() : ''}
     ${state.showReelImport ? renderReelImportModal() : ''}
     ${state.showReport ? renderReportModal() : ''}
     ${renderFab()}
@@ -1905,8 +1829,8 @@ function render(){
   // sync known ids after render so entrance animation only plays once per item
   knownPlanIds = new Set(state.plans.map(p=>p.id));
   knownTaskIds = new Set(state.tasks.map(t=>t.id));
-  if (state.showCapture || state.showAddScript) {
-    const ta = document.getElementById(state.showCapture ? 'f-idea-text' : 'f-app-script');
+  if (state.showCapture) {
+    const ta = document.getElementById('f-idea-text');
     if (ta) {
       ta.focus();
       ta.setSelectionRange(ta.value.length, ta.value.length);
@@ -2009,9 +1933,7 @@ function renderCloudBox(){
           ${qator('Rejalar', lokal.plans, srv ? (Number(srv.plans)||0) : null)}
           ${qator('Vazifalar', lokal.tasks, srv ? (Number(srv.tasks)||0) : null)}
           ${qator('Fikrlar', lokal.ideas, srv ? (Number(srv.ideas)||0) : null)}
-          ${qator('Kontent', lokal.posts, srv ? (Number(srv.posts)||0) : null)}
         </div>
-        <div class="rp-cloud-msg">Telefon va Windowsda aynan shu email ko'rinishi kerak. Matnlar Google Sheetdan, reja va holatlar Firebase'dan sinxronlanadi.</div>
         <button class="rp-add-btn" data-action="cloud-force">Qayta yuborish</button>
         <button class="rp-add-btn" data-action="cloud-signout">Bulutdan chiqish</button>
       </div>`;
@@ -2179,52 +2101,9 @@ function renderIdeaCard(it){
 
 function renderFab(){
   if (state.showAddPlan || state.showAddTask || state.showBackup || state.showCapture
-      || state.showQuickAdd || state.showAddScript || state.showAddPost || state.showLibrary || state.showImportScripts || state.showPick
-      || state.showReelImport || state.showReport || state.showSheet || state.showSplit || state.showContentSettings || state.showShootBatch || state.showScriptViewer) return '';
-  return `<button class="rp-fab" data-action="open-quick-add" aria-label="Yangi yozuv qo'shish">&#43;</button>`;
-}
-
-function validateShootBatch(raw, seen, issues){
-  if (!raw || typeof raw !== 'object') return null;
-  const id = cleanId(raw.id, seen, issues, "S'yomka sessiyasi");
-  const code = cleanText(raw.code, 24).trim().toUpperCase();
-  if (!id || !/^[A-Z0-9_-]{3,24}$/.test(code)) return null;
-  const selected = Array.isArray(raw.scriptIds) ? raw.scriptIds.map(String).filter(x => ID_RE.test(x)) : [];
-  const scriptIds = Array.from(new Set(selected)).slice(0, 20);
-  const selectedPosts = Array.isArray(raw.postIds) ? raw.postIds.map(String).filter(x => ID_RE.test(x)) : [];
-  const postIds = Array.from(new Set(selectedPosts)).slice(0, 20);
-  if (!scriptIds.length && !postIds.length) return null;
-  const shot = new Set((Array.isArray(raw.shotIds) ? raw.shotIds : []).map(String));
-  const shotIds = scriptIds.concat(postIds).filter(id2 => shot.has(id2));
-  return {
-    id, code,
-    label: cleanText(raw.label, 80).trim() || "S'yomka sessiyasi",
-    outfit: cleanText(raw.outfit, 60).trim(),
-    location: cleanText(raw.location, 60).trim(),
-    scriptIds, postIds, shotIds,
-    gapDays: Math.max(3, Math.min(30, Math.floor(Number(raw.gapDays) || 5))),
-    startDate: isValidDateKey(raw.startDate) ? raw.startDate : toKey(new Date()),
-    status: raw.status === 'scheduled' ? 'scheduled' : 'shooting',
-    scheduledPostIds: Array.isArray(raw.scheduledPostIds) ? raw.scheduledPostIds.map(String).filter(x => ID_RE.test(x)).slice(0, 20) : [],
-    createdAt: finiteNum(raw.createdAt) || Date.now(),
-  };
-}
-
-function renderQuickAddModal(){
-  return `<div class="rp-modal-overlay" data-action="close-quick-add"><div class="rp-modal rp-modal-capture" data-action="noop">
-    <div class="rp-modal-header"><span>Qo'shish</span><button class="rp-icon-btn" data-action="close-quick-add">&#10005;</button></div>
-    <button class="rp-add-btn" data-action="quick-idea">Fikr yozish</button>
-    <button class="rp-save-btn" data-action="quick-script">Reels matni yozish</button>
-  </div></div>`;
-}
-
-function renderAddScriptModal(){
-  return `<div class="rp-modal-overlay" data-action="close-add-script"><div class="rp-modal rp-modal-tall" data-action="noop">
-    <div class="rp-modal-header"><span>Reels matni yozish</span><button class="rp-icon-btn" data-action="close-add-script">&#10005;</button></div>
-    <p class="rp-note">Tayyor Reels matnini yozing yoki shu yerga qo'ying. U darhol Matn kutubxonasiga tushadi.</p>
-    <textarea id="f-app-script" class="rp-idea-input rp-script-input" data-draft="appscript" rows="9" placeholder="Reels matni...">${esc(state.appScriptDraft)}</textarea>
-    <button class="rp-save-btn" data-action="save-app-script">Zaxiraga qo'shish</button>
-  </div></div>`;
+      || state.showAddPost || state.showLibrary || state.showImportScripts || state.showPick
+      || state.showReelImport || state.showReport || state.showSheet || state.showSplit || state.showExport) return '';
+  return `<button class="rp-fab" data-action="open-capture" aria-label="Fikr yozib olish">&#43;</button>`;
 }
 
 function renderCaptureModal(){
@@ -2263,25 +2142,6 @@ function contentStats(todayKey){
   return { total: act.length, counts, ready: counts.montaj };
 }
 
-// Bosqichlar yig'ilib boradi: montaji tayyor reel avval matni tayyor va video
-// olingan bosqichlaridan ham o'tgan. Shuning uchun u uchala hisobda ko'rinadi.
-function contentVisualStats(todayKey){
-  const start = isValidDateKey(state.contentStartDate) && state.contentStartDate > todayKey
-    ? state.contentStartDate : todayKey;
-  const scheduled = state.posts.filter(p => p.date && p.date >= start);
-  const counts = { matn:0, video:0, montaj:0 };
-  const byDate = new Map();
-  for (const p of scheduled) {
-    if (p.matnAt) counts.matn++;
-    if (p.videoAt) counts.video++;
-    if (p.montajAt) counts.montaj++;
-    const stage = p.montajAt ? 'montaj' : (p.videoAt ? 'video' : 'matn');
-    if (!byDate.has(p.date)) byDate.set(p.date, []);
-    byDate.get(p.date).push(stage);
-  }
-  return { start, total:scheduled.length, counts, byDate };
-}
-
 function stageOn(post, stageId){ return !!post[stageId + 'At']; }
 
 // Bosqichni bosganda tartib avtomatik saqlanadi:
@@ -2300,14 +2160,12 @@ function togglePostStage(postId, stageId){
     for (let k = idx; k < STAGE_KEYS.length; k++) p[STAGE_KEYS[k]] = null;
   }
   state.posts = state.posts.map(x => x.id === postId ? p : x);
-  // Video olindi (yoki montaj bosqichi yoqildi) — faqat endi matn haqiqatan ishlatildi.
-  if (p.scriptId && p.videoAt && !isScriptUsed(p.scriptId)) state.usedScripts = state.usedScripts.concat([p.scriptId]);
   commit();
   if (turningOn && stageId === 'montaj') toast('Tayyor — Instagramga qo\'yish mumkin');
   render();
 }
 
-function addPost(title, date, scriptId, readyStage){
+function addPost(title, date, scriptId){
   const t = String(title || '').trim();
   if (!t) return null;
   const now = Date.now();
@@ -2315,10 +2173,8 @@ function addPost(title, date, scriptId, readyStage){
               scriptId: scriptId || null, note: '', createdAt: now, editedAt: now };
   for (const k of STAGE_KEYS) p[k] = null;
   if (scriptId) p.matnAt = now;              // matn tayyor - kutubxonadan olindi
-  const readyIdx = CONTENT_STAGES.findIndex(s => s.id === readyStage);
-  if (readyIdx >= 0) for (let i = 0; i <= readyIdx; i++) p[STAGE_KEYS[i]] = now;
   state.posts = state.posts.concat([p]);
-  // Kunga qo'yish yoki kontent kartasi yaratish — hali video olinishi degani emas.
+  if (scriptId) markScriptUsed(scriptId, true);
   commit();
   return p;
 }
@@ -2462,62 +2318,7 @@ function sheetCsvUrl(raw){
   return null;
 }
 
-function isPublishedSheetUrl(raw){
-  return /\/spreadsheets\/d\/e\/[^/]+\/pub(?:html)?(?:[/?#]|$)/.test(String(raw || '').trim());
-}
-
-function sheetIdAndGid(raw){
-  const u = String(raw == null ? '' : raw).trim();
-  const m = u.match(/\/d\/([A-Za-z0-9_-]{20,})/);
-  if (!m) return null;
-  const gid = (u.match(/[?&#]gid=(\d+)/) || [])[1] || null;
-  return { id: m[1], gid };
-}
-
-async function googleSheetRows(){
-  const c = window.rejamCloud, ref = sheetIdAndGid(state.sheetUrl);
-  if (!c || !c.sheetsConnected || !ref) throw new Error('Google Sheets ulanmagan');
-  const base = 'https://sheets.googleapis.com/v4/spreadsheets/' + encodeURIComponent(ref.id);
-  const metaRes = await c.sheetsFetch(base + '?fields=sheets(properties(sheetId,title))');
-  if (!metaRes.ok) throw new Error('Jadval ochilmadi (' + metaRes.status + ')');
-  const meta = await metaRes.json(), sheets = meta.sheets || [];
-  const chosen = sheets.find(s => String(s.properties && s.properties.sheetId) === ref.gid) || sheets[0];
-  if (!chosen || !chosen.properties) throw new Error('Jadval varag\'i topilmadi');
-  const title = chosen.properties.title;
-  const range = "'" + title.replace(/'/g, "''") + "'!A1:ZZ10000";
-  const dataRes = await c.sheetsFetch(base + '/values/' + encodeURIComponent(range));
-  if (!dataRes.ok) throw new Error('Jadval qatorlari o\'qilmadi (' + dataRes.status + ')');
-  const data = await dataRes.json();
-  return { id: ref.id, range, rows: data.values || [] };
-}
-
-function mergeSheetScripts(items){
-  const have = new Set(state.scripts.map(x => scriptKey(x.text))), fromSheet = new Set(), fresh = [];
-  for (const f of items) {
-    const id = scriptKey(f.text); fromSheet.add(id);
-    if (have.has(id)) continue;
-    have.add(id); fresh.push({ id, text:f.text.slice(0, 8000), tag:f.tag.slice(0, 60), source:'sheet', createdAt:Date.now() });
-  }
-  const before = state.scripts.length;
-  state.scripts = state.scripts.filter(sc => sc.source !== 'sheet' || fromSheet.has(scriptKey(sc.text))).concat(fresh);
-  return { fresh, removed: before + fresh.length - state.scripts.length };
-}
-
 async function fetchSheet(silent){
-  const cloud = window.rejamCloud;
-  if (cloud && cloud.sheetsConnected && sheetIdAndGid(state.sheetUrl)) {
-    state.sheetBusy = true; state.sheetMsg = null; render();
-    try {
-      const api = await googleSheetRows();
-      const result = mergeSheetScripts(scriptsFromTable(api.rows).items);
-      state.sheetFetchedAt = Date.now(); commit();
-      state.sheetMsg = { bad:false, text: result.fresh.length || result.removed
-        ? (result.fresh.length ? result.fresh.length + ' ta yangi matn olindi' : 'Yangi matn yo\'q') + (result.removed ? ', ' + result.removed + ' ta eski Sheet matni chiqarildi' : '')
-        : 'Yangi matn yo\'q — hammasi allaqachon bor' };
-      if (!silent && result.fresh.length) toast(result.fresh.length + ' ta yangi matn');
-    } catch(e) { state.sheetMsg = { bad:true, text:(e && e.message) || 'Google Sheets o\'qilmadi' }; }
-    state.sheetBusy = false; render(); return;
-  }
   const url = sheetCsvUrl(state.sheetUrl);
   if (!url) { state.sheetMsg = { bad: true, text: "Havola noto'g'ri. Google Sheets havolasini qo'ying." }; render(); return; }
   state.sheetBusy = true; state.sheetMsg = null; render();
@@ -2532,129 +2333,50 @@ async function fetchSheet(silent){
   }
   state.sheetBusy = false;
   if (err) {
-    const published = isPublishedSheetUrl(state.sheetUrl);
-    state.sheetMsg = { bad: true, text: published
-      ? 'Nashr qilingan havola ochilmadi. Sheetda “Vebda nashr qilish” oynasida butun jadval nashr qilinganini tekshiring.'
-      : 'Bu oddiy /edit havola. “Vebda nashr qilish”dan chiqqan /d/e/.../pub havolani shu yerga qo‘ying yoki “Google orqali yozishni ulash”ni bosing.' };
+    state.sheetMsg = { bad: true, text: err + '. Jadvalni "Vebda nashr qilish" qilganingizga ishonch hosil qiling.' };
     render(); return;
   }
   const parsed = scriptsFromTable(parseTable(text));
-  const result = mergeSheetScripts(parsed.items);
-  const fresh = result.fresh, removed = result.removed;
+  const have = new Set(state.scripts.map(x => x.id));
+  const fresh = [];
+  for (const f of parsed.items) {
+    const id = scriptKey(f.text);
+    if (have.has(id)) continue;
+    have.add(id);
+    fresh.push({ id, text: f.text.slice(0, 8000), tag: f.tag.slice(0, 60), createdAt: Date.now() });
+  }
+  if (fresh.length) state.scripts = state.scripts.concat(fresh);
   state.sheetFetchedAt = Date.now();
-  state.sheetMsg = { bad: false, text: fresh.length || removed
-    ? (fresh.length ? fresh.length + ' ta yangi matn olindi' : 'Yangi matn yo\'q') + (removed ? ', ' + removed + ' ta eski Sheet matni chiqarildi' : '')
+  state.sheetMsg = { bad: false, text: fresh.length
+    ? fresh.length + ' ta yangi matn olindi'
     : 'Yangi matn yo\'q — hammasi allaqachon bor' };
   commit(); render();
   if (!silent && fresh.length) toast(fresh.length + ' ta yangi matn');
-}
-
-// Sheet matnlari Firebase'ga yuborilmaydi: ikki qurilma bitta Sheetni manba
-// sifatida o'qiydi. Telefon/app qayta ochilganda yoki oldinga qaytganda yangi
-// qatorlarni qo'lda "Yangilash" bosmasdan olib kelamiz.
-function autoRefreshSheet(force){
-  if (document.visibilityState === 'hidden' || state.sheetBusy || state.sheetWriteBusy || !state.sheetUrl) return;
-  const cloud = window.rejamCloud;
-  if (!isPublishedSheetUrl(state.sheetUrl) && !(cloud && cloud.sheetsConnected)) return;
-  if (!force && Date.now() - Number(state.sheetFetchedAt || 0) < 60000) return;
-  fetchSheet(true);
-}
-
-function addAppScript(raw){
-  const text = String(raw == null ? '' : raw).trim().slice(0, 8000);
-  if (!text) { toast('Matnni yozing'); return false; }
-  const id = scriptKey(text);
-  if (state.scripts.some(sc => scriptKey(sc.text) === id)) {
-    toast('Bu matn kutubxonada allaqachon bor');
-    return false;
-  }
-  state.scripts = state.scripts.concat([{ id, text, tag: '', source: 'app', createdAt: Date.now() }]);
-  commit();
-  if (window.rejamCloud && window.rejamCloud.sheetsConnected && state.sheetUrl) syncAppScriptsToSheet(true);
-  return true;
-}
-
-async function syncAppScriptsToSheet(silent){
-  state.sheetWriteBusy = true; state.sheetMsg = null; render();
-  try {
-    const api = await googleSheetRows();
-    const headers = (api.rows[0] || []).map(x => String(x == null ? '' : x).trim().toLocaleLowerCase('uz'));
-    const textCol = headers.findIndex(h => ['matn','reels matni','draft matn','script'].includes(h));
-    const tagCol = headers.findIndex(h => ['mavzu','kategoriya','tag'].includes(h));
-    if (textCol < 0) throw new Error('Yozish uchun Sheetda Matn, Reels matni, Draft matn yoki Script sarlavhasi bo\'lsin');
-    const emptyKey = scriptKey('');
-    const existing = new Set(api.rows.slice(1).map(r => scriptKey(r[textCol] || '')).filter(k => k !== emptyKey));
-    const pending = state.scripts.filter(sc => !existing.has(scriptKey(sc.text)));
-    if (pending.length) {
-      const width = Math.max((api.rows[0] || []).length, textCol + 1, tagCol + 1);
-      const values = pending.map(sc => {
-        const row = Array(width).fill(''); row[textCol] = sc.text; if (tagCol >= 0) row[tagCol] = sc.tag || ''; return row;
-      });
-      const url = 'https://sheets.googleapis.com/v4/spreadsheets/' + encodeURIComponent(api.id) + '/values/' + encodeURIComponent(api.range) + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS';
-      const res = await window.rejamCloud.sheetsFetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({values}) });
-      if (!res.ok) throw new Error('Sheetga yozilmadi (' + res.status + ')');
-    }
-    state.sheetMsg = { bad:false, text: pending.length ? pending.length + ' ta app matni Sheetga yozildi' : 'Sheet va kutubxona bir xil' };
-    if (!silent && pending.length) toast(pending.length + ' ta matn Sheetga yozildi');
-  } catch(e) { state.sheetMsg = { bad:true, text:(e && e.message) || 'Sheetga yozilmadi' }; }
-  state.sheetWriteBusy = false; render();
 }
 
 // ---------- Kunlarga bo'lish ----------
 // Matn zaxirasidan N ta matnni ketma-ket bo'sh kunlarga taqsimlaydi.
 function busyDates(){ return new Set(state.posts.map(p => p.date).filter(Boolean)); }
 
-function reserveStart(todayKey){
-  // "Oxirgi reja tugagandan keyin" emas: sochib qo'yilgan rejalarning ORASIDAGI
-  // bo'sh kunlar ham zaxira uchun ishlatiladi. Shuning uchun faqat nashr starti kerak.
-  return { date: splitStart(todayKey), locked: false, last: null };
-}
-
-// Avto-taqsimlash zaxira hisobidan boshqa qoida bilan yuradi: foydalanuvchi
-// belgilagan startdan boshlaydi va faqat band SANALARNI tashlab o'tadi.
-// Masalan, 5-oktabr band bo'lsa, 2–4 va 6-oktabrlar to'ldiriladi.
-function splitStart(todayKey){
-  if (isValidDateKey(state.contentStartDate)) return state.contentStartDate > todayKey ? state.contentStartDate : todayKey;
-  // Sozlama hali qo'yilmagan bo'lsa, qo'lda kiritilgan birinchi kelajakdagi
-  // video sanasidan boshlaymiz. Shunda 1 va 10-oktabr band qilingan bo'lsa,
-  // avtomatika bugundan emas, 1-oktabrdan bo'shliqlarni to'ldiradi.
-  const firstPlanned = state.posts.map(p => p.date).filter(d => d && d >= todayKey).sort()[0];
-  return firstPlanned || todayKey;
-}
-
-function scriptReservePlan(todayKey, count, perDay){
-  const n = Math.max(0, Number(count) || 0);
-  const daily = Math.max(1, Math.min(10, Math.floor(Number(perDay) || 1)));
-  const start = reserveStart(todayKey);
-  const dates = n ? nextFreeDates(n, parseKey(start.date), daily) : [];
-  const uniqueDays = new Set(dates).size;
-  return { count: n, perDay: daily, start: dates[0] || start.date, locked: start.locked, lastPlanned: start.last,
-    end: dates.length ? dates[dates.length - 1] : null, days: uniqueDays };
-}
-
-function nextFreeDates(n, fromDate, perDay){
+function nextFreeDates(n, fromDate){
   const busy = busyDates();
   const out = [];
   let d = new Date(fromDate);
-  const daily = Math.max(1, Math.min(10, Math.floor(Number(perDay) || 1)));
   let guard = 0;
   while (out.length < n && guard++ < 2000) {
     const k = toKey(d);
-    if (!busy.has(k)) {
-      for (let i = 0; i < daily && out.length < n; i++) out.push(k);
-      busy.add(k);
-    }
+    if (!busy.has(k)) { out.push(k); busy.add(k); }
     d = addDays(d, 1);
   }
   return out;
 }
 
 function splitIntoDays(count){
-  const pool = availableScripts();
+  const pool = unusedScripts();
   const n = Math.max(0, Math.min(Number(count) || 0, pool.length));
   if (!n) return 0;
-  const todayKey = toKey(new Date());
-  const dates = nextFreeDates(n, parseKey(splitStart(todayKey)), state.contentPerDay);
+  const today = new Date();
+  const dates = nextFreeDates(n, today);
   const now = Date.now();
   const add = [];
   for (let i = 0; i < n; i++) {
@@ -2668,6 +2390,7 @@ function splitIntoDays(count){
     });
   }
   state.posts = state.posts.concat(add);
+  state.usedScripts = state.usedScripts.concat(pool.slice(0, n).map(x => x.id));
   commit();
   return n;
 }
@@ -2689,6 +2412,127 @@ function readyThrough(todayKey){
   return last;
 }
 
+// ---------- Oylik eksport ----------
+// Bir oylik reels mazmunini bitta matnga yig'adi - ChatGPT'ga tashlab,
+// shu mavzularda story va Telegram postlar yozdirish uchun.
+// Kartadagi sarlavha 70 belgiga qisqartirilgan - shuning uchun TO'LIQ matn
+// kutubxonadan olinadi.
+const MONTHS_FULL_UZ = ['Yanvar','Fevral','Mart','Aprel','May','Iyun','Iyul','Avgust','Sentabr','Oktabr','Noyabr','Dekabr'];
+const WEEKDAYS_FULL_UZ = ['Dushanba','Seshanba','Chorshanba','Payshanba','Juma','Shanba','Yakshanba'];
+
+function postFullText(p){
+  if (p.scriptId) {
+    const sc = state.scripts.find(x => x.id === p.scriptId);
+    if (sc) return sc.text;
+  }
+  return p.title;
+}
+
+function monthPosts(ym){
+  return state.posts
+    .filter(p => p.date && p.date.slice(0, 7) === ym)
+    .sort((a, b) => a.date < b.date ? -1 : (a.date > b.date ? 1 : 0));
+}
+
+function defaultExportMonth(){
+  // Joriy oyda reja bo'lmasa - kontent bor eng yaqin keyingi oy
+  const now = toKey(new Date()).slice(0, 7);
+  const months = Array.from(new Set(state.posts.filter(p => p.date).map(p => p.date.slice(0, 7)))).sort();
+  if (months.indexOf(now) >= 0) return now;
+  return months.find(m => m > now) || months[months.length - 1] || now;
+}
+
+function exportMonths(){
+  return Array.from(new Set(state.posts.filter(p => p.date).map(p => p.date.slice(0, 7)))).sort();
+}
+
+function monthLabel(ym){
+  const [y, m] = ym.split('-').map(Number);
+  return MONTHS_FULL_UZ[m - 1] + ' ' + y;
+}
+
+function buildMonthExport(ym, withPrompt){
+  const list = monthPosts(ym);
+  const [y, m] = ym.split('-').map(Number);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const lines = [];
+  if (withPrompt) {
+    lines.push(
+      'Quyida Bayyina arab tili akademiyasining ' + monthLabel(ym) + ' oyi uchun Instagram Reels rejasi.',
+      'Har kun uchun shu kungi reels mavzusiga yaqin, lekin uni so’zma-so’z takrorlamaydigan:',
+      '1) Instagram story (2–4 kadr, qisqa matn + savol yoki so’rovnoma g‘oyasi);',
+      '2) Telegram kanal uchun post (80–150 so’z, oxirida bitta aniq chaqiriq).',
+      'Uslub: samimiy, o’zbek tilida, ortiqcha rasmiyatchiliksiz. Natijani kun bo’yicha tartiblab ber.',
+      '',
+      '==========',
+      ''
+    );
+  }
+  lines.push(monthLabel(ym).toUpperCase() + ' — REELS REJASI (' + list.length + ' ta)', '');
+  for (const p of list) {
+    const d = parseKey(p.date);
+    const stage = p.montajAt ? 'tayyor' : (p.videoAt ? 'video olingan' : 'matn tayyor');
+    lines.push('—— ' + d.getDate() + '-' + MONTHS_UZ[d.getMonth()] + ', ' + WEEKDAYS_FULL_UZ[weekdayIdx(d)] + ' (' + stage + ')');
+    lines.push(postFullText(p).trim());
+    lines.push('');
+  }
+  const covered = new Set(list.map(p => p.date));
+  const empty = [];
+  for (let i = 1; i <= daysInMonth; i++) {
+    const k = ym + '-' + pad(i);
+    if (!covered.has(k)) empty.push(i);
+  }
+  return { text: lines.join('\n').trim() + '\n', count: list.length, empty, daysInMonth };
+}
+
+function exportFileName(ym){ return 'rejam-reels-' + ym + '.txt'; }
+
+async function shareMonthExport(ym, withPrompt){
+  const ex = buildMonthExport(ym, withPrompt);
+  const fname = exportFileName(ym);
+  try {
+    const file = new File([ex.text], fname, { type: 'text/plain' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: monthLabel(ym) + ' reels' });
+      return;
+    }
+  } catch (e) { if (e && e.name === 'AbortError') return; }
+  try {
+    const url = URL.createObjectURL(new Blob([ex.text], { type: 'text/plain' }));
+    const a = document.createElement('a'); a.href = url; a.download = fname;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
+    toast('Fayl yuklandi');
+  } catch (e) { toast('Saqlab bo\'lmadi — nusxa oling'); }
+}
+
+function renderExportModal(){
+  const months = exportMonths();
+  const ym = state.exportMonth || defaultExportMonth();
+  const ex = buildMonthExport(ym, state.exportPrompt);
+  const preview = ex.text;   // to'liq - oyna ichida aylantiriladi
+  return `
+    <div class="rp-modal-overlay" data-action="close-export">
+      <div class="rp-modal rp-modal-tall" data-action="noop">
+        <div class="rp-modal-header"><span>Oylik eksport</span><button class="rp-icon-btn" data-action="close-export">&#10005;</button></div>
+        ${months.length ? `<div class="rp-pill-row rp-lib-filters">
+          ${months.map(m => `<button class="rp-pill${m === ym ? ' rp-pill-active' : ''}" data-action="export-month" data-m="${m}">${esc(monthLabel(m))}</button>`).join('')}
+        </div>` : ''}
+        ${!ex.count ? `<div class="rp-empty">${esc(monthLabel(ym))} uchun kunga biriktirilgan reels yo'q.</div>` : `
+          <div class="rp-import-box">
+            <div class="rp-import-row"><span>Reels</span><b>${ex.count} ta</b></div>
+            <div class="rp-import-row"><span>Bo'sh kunlar</span><b>${ex.empty.length} / ${ex.daysInMonth}</b></div>
+            ${ex.empty.length && ex.empty.length <= 12 ? `<div class="rp-import-msg">Reels yo'q kunlar: ${ex.empty.join(', ')}</div>` : ''}
+          </div>
+          <label class="rp-check"><input type="checkbox" data-action="export-prompt"${state.exportPrompt ? ' checked' : ''}> ChatGPT uchun ko'rsatma qo'shilsin</label>
+          <div class="rp-export-preview">${esc(preview)}</div>
+          <button class="rp-save-btn" data-action="export-copy">Nusxa olish</button>
+          <button class="rp-add-btn" data-action="export-share">Fayl qilib yuborish</button>
+          <p class="rp-note rp-note-small">Har kun uchun to'liq reels matni chiqadi. ChatGPT'ga tashlab, shu mavzularda story va Telegram post yozdirasiz.</p>`}
+      </div>
+    </div>`;
+}
+
 // ---------- Matn kutubxonasi ----------
 function isScriptUsed(id){ return state.usedScripts.indexOf(id) >= 0; }
 
@@ -2704,7 +2548,7 @@ function markScriptUsed(id, used){
 function libraryRows(){
   const q = String(state.libQuery || '').trim().toLowerCase();
   let list = state.scripts;
-  if (state.libFilter === 'yangi') list = list.filter(x => !isScriptUsed(x.id) && !isScriptReserved(x.id));
+  if (state.libFilter === 'yangi') list = list.filter(x => !isScriptUsed(x.id));
   else if (state.libFilter === 'ishlatilgan') list = list.filter(x => isScriptUsed(x.id));
   if (q) list = list.filter(x => x.text.toLowerCase().indexOf(q) >= 0 || (x.tag || '').toLowerCase().indexOf(q) >= 0);
   return list;
@@ -2723,7 +2567,7 @@ function prepareScriptImport(raw, mode){
     state.scriptPreview = { error: 'Juda ko\'p (20000+). Qismlarga bo\'lib qo\'ying.' };
     render(); return;
   }
-  const have = new Set(state.scripts.map(x => scriptKey(x.text)));
+  const have = new Set(state.scripts.map(x => x.id));
   const seenNow = new Set();
   const fresh = [];
   let dup = 0;
@@ -2732,7 +2576,7 @@ function prepareScriptImport(raw, mode){
     if (seenNow.has(id)) { dup++; continue; }
     seenNow.add(id);
     if (have.has(id)) { dup++; continue; }
-    fresh.push({ id, text: f.text.slice(0, 8000), tag: f.tag.slice(0, 60), source: 'app', createdAt: Date.now() });
+    fresh.push({ id, text: f.text.slice(0, 8000), tag: f.tag.slice(0, 60), createdAt: Date.now() });
   }
   state.importMode = parsed.mode;
   state.scriptPreview = {
@@ -2754,228 +2598,12 @@ function confirmScriptImport(){
   state.importMode = 'auto';
   state.showImportScripts = false;
   commit(); render();
-  if (window.rejamCloud && window.rejamCloud.sheetsConnected && state.sheetUrl) syncAppScriptsToSheet(true);
   toast(pv.fresh.length + ' ta matn qo\'shildi');
-}
-
-// ---------- S'yomka sessiyasi ----------
-// Bir kiyim/lokatsiyada olinadigan videolar rejaning turli sanalaridan tanlanadi.
-// Faqat foydalanuvchi "olindi" deb tasdiqlagach video bosqichi yoqiladi; sana o'zgarmaydi.
-function reservedScriptIds(){
-  const ids = new Set();
-  for (const b of state.shootBatches) if (b.status === 'shooting') for (const id of (b.scriptIds || [])) ids.add(id);
-  return ids;
-}
-function isScriptReserved(id){ return reservedScriptIds().has(id); }
-function availableScripts(){
-  const assigned = assignedScriptIds();
-  return unusedScripts().filter(sc => !assigned.has(sc.id) && !isScriptReserved(sc.id));
-}
-function reservedShootPostIds(){
-  const ids = new Set();
-  for (const b of state.shootBatches) if (b.status === 'shooting') for (const id of (b.postIds || [])) ids.add(id);
-  return ids;
-}
-function shootingCount(){
-  let count = 0;
-  for (const b of state.shootBatches) if (b.status === 'shooting') count += (b.postIds && b.postIds.length) || (b.scriptIds || []).length;
-  return count;
-}
-function plannedShootPool(todayKey){
-  const reserved = reservedShootPostIds();
-  const scripts = new Set(state.scripts.map(sc => sc.id));
-  return postsSorted().filter(p => p.date && p.date >= todayKey && p.scriptId && scripts.has(p.scriptId) && p.matnAt && !p.videoAt && !reserved.has(p.id));
-}
-
-// Rejaning boshidan ketma-ket N ta emas, butun mavjud davrdan tengroq nuqtalar
-// olinadi. Reja zich bo'lsa oraliq qisqaradi, uzoqqa cho'zilgan bo'lsa kattalashadi.
-function autoPlannedShootPosts(count, outfit, location, todayKey){
-  const raw = plannedShootPool(todayKey || toKey(new Date()));
-  const compatible = raw.filter(p => !shootMetaClash(p.date, outfit, location, 3, []));
-  const list = compatible.length ? compatible : raw;
-  const n = Math.max(0, Math.min(list.length, Math.floor(Number(count) || 0)));
-  if (!n) return [];
-  if (n === 1) return [list[0]];
-  if (n >= list.length) return list;
-  const out = [], used = new Set();
-  for (let i = 0; i < n; i++) {
-    let idx = Math.round(i * (list.length - 1) / (n - 1));
-    while (used.has(idx) && idx + 1 < list.length) idx++;
-    if (used.has(idx)) { idx = 0; while (used.has(idx)) idx++; }
-    used.add(idx); out.push(list[idx]);
-  }
-  return out.sort((a,b) => a.date.localeCompare(b.date));
-}
-
-function shootDateSpread(posts){
-  if (!posts || posts.length < 2) return '';
-  const gaps = [];
-  for (let i = 1; i < posts.length; i++) gaps.push(daysBetween(parseKey(posts[i - 1].date), parseKey(posts[i].date)));
-  const min = Math.min(...gaps), max = Math.max(...gaps);
-  return min === max ? min + ' kun atrofida' : min + '–' + max + ' kun oralig\'ida';
-}
-function makeBatchCode(){
-  const day = toKey(new Date()).replace(/-/g, '').slice(2);
-  const prefix = 'SY-' + day + '-';
-  const known = new Set(state.shootBatches.map(b => b.code));
-  let number = 1;
-  while (known.has(prefix + String(number).padStart(2, '0'))) number++;
-  return prefix + String(number).padStart(2, '0');
-}
-
-function normalizeShootMeta(value){
-  return String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('uz');
-}
-
-function legacyPostMeta(post, field){
-  if (post && post[field]) return String(post[field]).trim();
-  const label = field === 'outfit' ? 'Kiyim' : 'Lokatsiya';
-  const match = String(post && post.note || '').match(new RegExp(label + ':\\s*([^·]+)', 'i'));
-  return match ? match[1].trim() : '';
-}
-
-function shootMetaOptions(field){
-  const result = [], seen = new Set();
-  const add = value => {
-    const clean = String(value || '').trim().replace(/\s+/g, ' '), key = normalizeShootMeta(clean);
-    if (!key || seen.has(key)) return;
-    seen.add(key); result.push(clean);
-  };
-  state.shootBatches.slice().sort((a,b) => (b.createdAt || 0) - (a.createdAt || 0)).forEach(b => add(b[field]));
-  state.posts.slice().sort((a,b) => (b.createdAt || 0) - (a.createdAt || 0)).forEach(p => add(legacyPostMeta(p, field)));
-  return result;
-}
-
-function canonicalShootMeta(field, value){
-  const clean = String(value || '').trim().replace(/\s+/g, ' '), key = normalizeShootMeta(clean);
-  if (!key) return '';
-  return shootMetaOptions(field).find(x => normalizeShootMeta(x) === key) || clean;
-}
-
-function shootMetaClash(dateKey, outfit, location, gapDays, selected){
-  const outfitKey = normalizeShootMeta(outfit), locationKey = normalizeShootMeta(location);
-  if (!outfitKey && !locationKey) return false;
-  const gap = Math.max(3, Math.min(30, Math.floor(Number(gapDays) || 5)));
-  const rows = state.posts.filter(p => p.date).map(p => ({
-    date:p.date, outfit:legacyPostMeta(p, 'outfit'), location:legacyPostMeta(p, 'location')
-  })).concat(selected || []);
-  return rows.some(row => {
-    const sameOutfit = outfitKey && normalizeShootMeta(row.outfit) === outfitKey;
-    const sameLocation = locationKey && normalizeShootMeta(row.location) === locationKey;
-    return (sameOutfit || sameLocation) && Math.abs(daysBetween(parseKey(dateKey), parseKey(row.date))) < gap;
-  });
-}
-
-function scatterFreeDates(n, startDate, gapDays, meta){
-  const busy = busyDates(), out = [];
-  let d = new Date(startDate), guard = 0;
-  const gap = Math.max(3, Math.min(30, Math.floor(Number(gapDays) || 5)));
-  const outfit = meta && meta.outfit || '', location = meta && meta.location || '';
-  const selected = [];
-  while (out.length < n && guard++ < 4000) {
-    while ((busy.has(toKey(d)) || shootMetaClash(toKey(d), outfit, location, gap, selected)) && guard++ < 4000) d = addDays(d, 1);
-    const k = toKey(d); out.push(k); busy.add(k);
-    selected.push({ date:k, outfit, location });
-    d = addDays(d, gap);
-  }
-  return out;
-}
-function createShootBatch(draft){
-  const freeById = new Map(availableScripts().map(sc => [sc.id, sc]));
-  // Eski chaqiruvlar/count uchun fallback qoldi; yangi oynada faqat foydalanuvchi
-  // belgilagan scriptIds o'tadi.
-  const selectedIds = Array.isArray(draft.scriptIds) ? draft.scriptIds.map(String) : [];
-  const selected = Array.from(new Set(selectedIds)).map(id => freeById.get(id)).filter(Boolean);
-  const count = Math.max(1, Math.min(12, Math.floor(Number(draft.count) || 5)));
-  const scripts = selected.length ? selected : (selectedIds.length ? [] : availableScripts().slice(0, count));
-  if (!scripts.length) return null;
-  const now = Date.now();
-  const outfit = canonicalShootMeta('outfit', draft.outfit);
-  const location = canonicalShootMeta('location', draft.location);
-  const b = {
-    id: uid(), code: makeBatchCode(),
-    label: String(draft.label || '').trim() || 'S\'yomka sessiyasi',
-    outfit, location,
-    scriptIds: scripts.map(sc => sc.id), shotIds: [],
-    gapDays: Math.max(3, Math.min(30, Math.floor(Number(draft.gapDays) || 5))),
-    startDate: isValidDateKey(draft.startDate) ? draft.startDate : splitStart(toKey(new Date())),
-    status: 'shooting', scheduledPostIds: [], createdAt: now,
-  };
-  state.shootBatches = state.shootBatches.concat([b]); commit(); return b;
-}
-
-function createPlannedShootBatch(draft){
-  const outfit = canonicalShootMeta('outfit', draft.outfit);
-  const location = canonicalShootMeta('location', draft.location);
-  const posts = autoPlannedShootPosts(draft.count, outfit, location, toKey(new Date()));
-  if (!posts.length) return null;
-  const now = Date.now();
-  const b = {
-    id:uid(), code:makeBatchCode(),
-    label:String(draft.label || '').trim() || 'S\'yomka sessiyasi',
-    outfit, location,
-    postIds:posts.map(p => p.id), scriptIds:posts.map(p => p.scriptId), shotIds:[],
-    gapDays:5, startDate:posts[0].date, status:'shooting', scheduledPostIds:posts.map(p => p.id), createdAt:now,
-  };
-  state.shootBatches = state.shootBatches.concat([b]); commit(); return b;
-}
-function toggleBatchShot(batchId, scriptId){
-  state.shootBatches = state.shootBatches.map(b => {
-    if (b.id !== batchId || b.status !== 'shooting') return b;
-    const had = b.shotIds.includes(scriptId);
-    return Object.assign({}, b, { shotIds: had ? b.shotIds.filter(id => id !== scriptId) : b.shotIds.concat([scriptId]) });
-  });
-  commit(); render();
-}
-function finalizeShootBatch(batchId){
-  const b = state.shootBatches.find(x => x.id === batchId && x.status === 'shooting');
-  if (!b || !b.shotIds.length) return 0;
-  if (b.postIds && b.postIds.length) {
-    const shot = new Set(b.shotIds), now = Date.now();
-    const changed = [];
-    state.posts = state.posts.map(p => {
-      if (!shot.has(p.id) || !b.postIds.includes(p.id)) return p;
-      changed.push(p);
-      const note = (b.outfit ? 'Kiyim: ' + b.outfit : '') + (b.location ? (b.outfit ? ' · ' : '') + 'Lokatsiya: ' + b.location : '');
-      return Object.assign({}, p, {
-        ref:p.ref || b.code + '-' + String(changed.length).padStart(2, '0'),
-        note:note || p.note, outfit:b.outfit, location:b.location,
-        matnAt:p.matnAt || now, videoAt:p.videoAt || now, editedAt:now,
-      });
-    });
-    state.usedScripts = Array.from(new Set(state.usedScripts.concat(changed.map(p => p.scriptId).filter(Boolean))));
-    state.shootBatches = state.shootBatches.map(x => x.id === b.id ? Object.assign({}, x, { status:'scheduled', scheduledPostIds:changed.map(p => p.id) }) : x);
-    commit(); render();
-    toast(changed.length + ' ta video olindi — rejalangan sanalari o\'zgarmadi');
-    return changed.length;
-  }
-  const scripts = b.shotIds.map(id => state.scripts.find(sc => sc.id === id)).filter(Boolean);
-  const dates = scatterFreeDates(scripts.length, parseKey(b.startDate), b.gapDays, { outfit:b.outfit, location:b.location });
-  const now = Date.now();
-  const posts = scripts.map((sc, i) => ({
-    id: uid(), title: sc.text.replace(/\s+/g, ' ').trim().slice(0, 70),
-    ref: b.code + '-' + String(i + 1).padStart(2, '0'), date: dates[i], scriptId: sc.id,
-    note: (b.outfit ? 'Kiyim: ' + b.outfit : '') + (b.location ? (b.outfit ? ' · ' : '') + 'Lokatsiya: ' + b.location : ''),
-    outfit: b.outfit, location: b.location,
-    batchId: b.id, createdAt:now, editedAt:now, matnAt:now, videoAt:now, montajAt:null,
-  }));
-  state.posts = state.posts.concat(posts);
-  state.usedScripts = Array.from(new Set(state.usedScripts.concat(scripts.map(sc => sc.id))));
-  state.shootBatches = state.shootBatches.map(x => x.id === b.id ? Object.assign({}, x, { status:'scheduled', scheduledPostIds:posts.map(p => p.id) }) : x);
-  commit(); render();
-  toast(posts.length + ' ta video ' + b.gapDays + ' kun oralatib jadvalga qo\'yildi');
-  return posts.length;
-}
-function cancelShootBatch(batchId){
-  const b = state.shootBatches.find(x => x.id === batchId && x.status === 'shooting');
-  if (!b) return;
-  state.shootBatches = state.shootBatches.filter(x => x.id !== batchId); commit(); render();
-  toast(b.postIds && b.postIds.length ? 'Sessiya bekor qilindi — reja o\'zgarmadi' : 'Sessiya bekor qilindi — matnlar zaxirada qoldi');
 }
 
 function scriptToPost(id){
   const sc = state.scripts.find(x => x.id === id);
-  if (!sc || isScriptReserved(id)) { toast("Bu matn s'yomka sessiyasida band"); return; }
+  if (!sc) return;
   const title = sc.text.replace(/\s+/g, ' ').trim().slice(0, 70);
   addPost(title, null, id);
   state.showLibrary = false;
@@ -2983,60 +2611,10 @@ function scriptToPost(id){
   toast('Kontent qo\'shildi — matn tayyor');
 }
 
-function scheduleScriptToDate(id, date){
-  const sc = state.scripts.find(x => x.id === id);
-  if (!sc || isScriptReserved(id) || !isValidDateKey(date)) return false;
-  addPost(sc.text.replace(/\s+/g, ' ').trim().slice(0, 70), date, id);
-  state.showScheduleScript = false;
-  state.schedulingScriptId = null;
-  state.showLibrary = false;
-  render();
-  toast(fmtUz(parseKey(date)) + 'ga qo\'yildi');
-  return true;
-}
-
-function copyScriptText(id){
-  const sc = state.scripts.find(x => x.id === id);
-  if (!sc) return;
-  const done = () => toast('Matn nusxa olindi');
-  // iOS Safari/PWA clipboard Promise'i ba'zan ruxsatni kech rad etadi. O'sha
-  // paytda user gesture yo'qolib, fallback ham ishlamay qoladi. Eski copy
-  // usulini avval, aynan tugma bosilgan event ichida sinaymiz.
-  if (fallbackCopy(sc.text)) { done(); return; }
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(sc.text).then(done).catch(() => {
-      toast('Nusxa olib bo\'lmadi — matnni bosib ushlab belgilang');
-    });
-  } else toast('Nusxa olib bo\'lmadi — matnni bosib ushlab belgilang');
-}
-
-function fallbackCopy(text){
-  const active = document.activeElement;
-  const sx = window.scrollX, sy = window.scrollY;
-  const area = document.createElement('textarea');
-  area.value = text;
-  area.setAttribute('readonly', '');
-  area.setAttribute('aria-hidden', 'true');
-  // display:none/opacity:0 iOS'da selectionni bekor qilishi mumkin.
-  area.style.cssText = 'position:fixed;top:0;left:-9999px;width:1px;height:1px;font-size:16px;pointer-events:none';
-  document.body.appendChild(area);
-  let copied = false;
-  try {
-    try { area.focus({ preventScroll:true }); } catch (e) { area.focus(); }
-    area.select();
-    area.setSelectionRange(0, area.value.length);
-    copied = document.execCommand('copy') === true;
-  } catch (e) { copied = false; }
-  document.body.removeChild(area);
-  try { if (active && active.focus) active.focus({ preventScroll:true }); } catch (e) {}
-  try { window.scrollTo(sx, sy); } catch (e) {}
-  return copied;
-}
-
 function renderContentTab(today){
   const todayKey = toKey(today);
   const st = contentStats(todayKey);
-  const yangi = availableScripts().length;
+  const yangi = unusedScripts().length;
 
   const sorted = postsSorted();
   const bugun  = sorted.filter(p => p.date === todayKey);
@@ -3054,75 +2632,16 @@ function renderContentTab(today){
 
   return `
     ${renderReadyBar(todayKey)}
-    ${renderContentOverview(todayKey)}
     ${renderScriptBank(yangi)}
-    <div class="rp-content-search"><input class="rp-cloud-input" id="f-content-q" data-draft="contentq" placeholder="Kiyim, lokatsiya, kod yoki matndan qidiring..." value="${esc(state.contentQuery)}" /><div id="content-search-results">${renderContentSearchResults(todayKey)}</div></div>
-    <div class="rp-schedule-guide"><b>Avval tayyor videolarni sanaga qo'ying.</b> Keyin &laquo;Kunlarga bo'l&raquo; matnlarni faqat bo'sh kunlarga joylaydi.</div>
-    ${renderShootBatches()}
     ${bosh}
     ${sec('Bugun', bugun)}
-    ${renderFuturePosts(keyin, todayKey)}
+    ${sec('Keyingi kunlar', keyin)}
     ${sec('Kunga biriktirilmagan', zaxira)}
     ${past.length ? `
       <button class="rp-link-btn rp-past-toggle" data-action="toggle-past">${state.showPastPosts ? "O'tganlarni yashirish" : `O'tgan kunlar (${past.length})`}</button>
       ${state.showPastPosts ? `<div class="rp-list rp-list-past">${past.map(p => renderPostCard(p, todayKey)).join('')}</div>` : ''}` : ''}
-    <div class="rp-content-actions">
-      <button class="rp-add-btn" data-action="open-ready-days">Tayyor kunlarni belgilash</button>
-      <button class="rp-add-btn" data-action="open-add-post">Bitta video qo'shish</button>
-    </div>`;
-}
-
-function renderContentOverview(todayKey){
-  const view = contentVisualStats(todayKey);
-  const startDate = parseKey(view.start);
-  const offset = (startDate.getDay() + 6) % 7; // Dushanbadan boshlanadigan taqvim
-  const cells = Array(offset).fill('<div class="rp-overview-day rp-overview-blank"></div>');
-  let end = startDate;
-  for (let i = 0; i < 84; i++) {
-    const d = addDays(startDate, i), key = toKey(d), stages = view.byDate.get(key) || [];
-    const counts = { matn:0, video:0, montaj:0 };
-    for (const stage of stages) counts[stage]++;
-    const top = counts.montaj ? 'montaj' : (counts.video ? 'video' : (counts.matn ? 'matn' : 'empty'));
-    const detail = [counts.matn ? counts.matn + ' matn' : '', counts.video ? counts.video + ' video' : '', counts.montaj ? counts.montaj + ' montaj' : ''].filter(Boolean).join(', ');
-    cells.push(`<div class="rp-overview-day rp-overview-${top}${key === todayKey ? ' rp-overview-today' : ''}" title="${esc(fmtUz(d))}${detail ? ': ' + esc(detail) : ''}">
-      <span>${d.getDate()}</span>${stages.length ? `<b>${stages.length > 1 ? stages.length : '&#8226;'}</b>` : ''}
-    </div>`);
-    end = d;
-  }
-  const max = Math.max(1, view.total);
-  const rows = [
-    { id:'matn', label:'Matn tayyor', n:view.counts.matn },
-    { id:'video', label:'Video olindi', n:view.counts.video },
-    { id:'montaj', label:'Montaj tayyor', n:view.counts.montaj },
-  ];
-  return `<section class="rp-card rp-overview">
-    <div class="rp-overview-head"><div><b>Kontent holati</b><span>${view.total} ta rejalangan · bosqichlar yig'ilib boradi</span></div><i>${esc(fmtUz(startDate))}dan</i></div>
-    <div class="rp-overview-bars">${rows.map(row => `<div class="rp-overview-row">
-      <span>${row.label}</span><div class="rp-overview-track"><i class="rp-overview-fill rp-overview-fill-${row.id}" style="width:${Math.round(row.n / max * 100)}%"></i></div><b>${row.n}</b>
-    </div>`).join('')}</div>
-    <div class="rp-overview-calendar-head"><b>12 haftalik reja</b><span>${esc(fmtUz(startDate))} — ${esc(fmtUz(end))}</span></div>
-    <div class="rp-overview-weekdays">${['Du','Se','Cho','Pa','Ju','Sha','Ya'].map(x => `<span>${x}</span>`).join('')}</div>
-    <div class="rp-overview-calendar">${cells.join('')}</div>
-    <div class="rp-overview-legend"><span><i class="rp-legend-matn"></i>Faqat matn</span><span><i class="rp-legend-video"></i>Video</span><span><i class="rp-legend-montaj"></i>Montaj</span></div>
-  </section>`;
-}
-
-function postSearchText(post){
-  const script = post.scriptId ? state.scripts.find(sc => sc.id === post.scriptId) : null;
-  return [post.ref, post.title, post.note, post.outfit, post.location, script && script.tag, script && script.text]
-    .filter(Boolean).join(' ').toLocaleLowerCase('uz');
-}
-
-function renderContentSearchResults(todayKey){
-  const raw = String(state.contentQuery || '').trim();
-  if (!raw) return '';
-  const words = raw.toLocaleLowerCase('uz').split(/\s+/).filter(Boolean);
-  const matches = postsSorted().filter(post => {
-    const haystack = postSearchText(post);
-    return words.every(word => haystack.includes(word));
-  });
-  if (!matches.length) return `<div class="rp-search-empty">“${esc(raw)}” bo'yicha rejalangan video topilmadi.</div>`;
-  return `<div class="rp-sec-label rp-search-label">Qidiruv natijasi <i>${matches.length}</i></div><div class="rp-list rp-search-list">${matches.map(post => renderPostCard(post, todayKey)).join('')}</div>`;
+    ${state.posts.some(p => p.date) ? `<button class="rp-add-btn rp-export-btn" data-action="open-export">Oylik rejani eksport qilish</button>` : ''}
+    <button class="rp-link-btn rp-bridge-more" data-action="open-add-post">Qo'lda kontent qo'shish</button>`;
 }
 
 // Eng muhim ikki raqam: qaysi sanagacha tayyor, va nechta matn navbatda.
@@ -3145,142 +2664,66 @@ function renderReadyBar(todayKey){
 // Matn zaxirasi: Sheet bilan bog'liq hamma narsa shu yerda.
 function renderScriptBank(yangi){
   const linked = !!sheetCsvUrl(state.sheetUrl);
-  const planned = plannedUnfilmedScriptIds().size;
   const tone = yangi >= 30 ? 'ok' : (yangi >= 10 ? 'warn' : 'bad');
-  const plan = scriptReservePlan(toKey(new Date()), yangi, state.contentPerDay);
-  const schedule = yangi
-    ? `${esc(fmtUz(parseKey(plan.start)))}dan bo'sh kunlarga · kuniga ${plan.perDay} tadan · ${esc(fmtUz(parseKey(plan.end)))}gacha yetadi`
-    : (planned ? `${planned} ta matn rejalangan · hali video olinmagan` : 'Bo\'sh matn qolmadi');
   return `
     <div class="rp-bank">
       <div class="rp-bank-nums">
         <span class="rp-bank-big rp-tone-${tone}">${yangi}</span>
-        <span class="rp-bank-lbl">ta bo'sh matn zaxirada<br><i>${linked ? 'jadval ulangan' : 'jadval ulanmagan'}</i></span>
+        <span class="rp-bank-lbl">ta matn navbatda<br><i>${linked ? 'jadval ulangan' : 'jadval ulanmagan'}</i></span>
       </div>
-      <div class="rp-bank-plan">${schedule}</div>
       <div class="rp-bank-acts">
         ${linked
           ? `<button class="rp-bank-btn" data-action="sheet-sync"${state.sheetBusy ? ' disabled' : ''}>${state.sheetBusy ? '...' : 'Yangilash'}</button>`
           : `<button class="rp-bank-btn" data-action="open-sheet">Jadvalni ulash</button>`}
         ${yangi ? `<button class="rp-bank-btn rp-bank-btn2" data-action="open-split">Kunlarga bo'l</button>` : ''}
       </div>
-      <button class="rp-link-btn rp-bank-link" data-action="open-content-settings">Hisob sozlamasi</button>
-      ${planned ? `<button class="rp-link-btn rp-bank-link" data-action="open-shoot-batch">S'yomka uchun matn olish</button>` : ''}
-      ${shootingCount() ? `<div class="rp-bank-msg">${shootingCount()} ta matn s'yomka sessiyasida band</div>` : ''}
-      ${planned ? `<div class="rp-bank-msg">${planned} ta matn kunga qo'yilgan &middot; hali video olinmagan</div>` : ''}
       ${state.sheetMsg ? `<div class="rp-bank-msg${state.sheetMsg.bad ? ' rp-bank-msg-bad' : ''}">${esc(state.sheetMsg.text)}</div>` : ''}
-      ${linked ? `<button class="rp-link-btn rp-bank-link" data-action="open-sheet">Jadval sozlamasi</button>` : ''}
+      <button class="rp-link-btn rp-bank-link" data-action="${linked ? 'open-sheet' : 'open-import-scripts'}">${linked ? 'Jadval sozlamasi' : "Yoki matnlarni qo'lda qo'yish"}</button>
     </div>`;
 }
 
 function renderSheetModal(){
-  const cloud = window.rejamCloud;
-  const canWrite = !!(cloud && cloud.sheetsConnected && sheetIdAndGid(state.sheetUrl));
-  const normalLink = !!state.sheetUrl && !isPublishedSheetUrl(state.sheetUrl) && !!sheetIdAndGid(state.sheetUrl);
   return `
     <div class="rp-modal-overlay" data-action="close-sheet">
       <div class="rp-modal rp-modal-tall" data-action="noop">
         <div class="rp-modal-header"><span>Matnlar jadvali</span><button class="rp-icon-btn" data-action="close-sheet">&#10005;</button></div>
-        <p class="rp-note">Google ulanmagan bo'lsa, ilova jadvalni o'qishi uchun u <b>vebda nashr qilingan</b> bo'lishi kerak:<br>
+        <p class="rp-note">Ilova jadvalni o'zi o'qishi uchun u <b>vebda nashr qilingan</b> bo'lishi kerak:<br>
           Sheets → <b>Fayl</b> → <b>Ulashish</b> → <b>Vebda nashr qilish</b> → <b>Nashr qilish</b>.<br>
-          Chiqqan <b>/d/e/.../pub</b> havolani shu yerga qo'ying.</p>
-        <input class="rp-cloud-input" id="f-sheet-url" data-draft="sheeturl" placeholder=".../spreadsheets/d/e/.../pub?output=csv" value="${esc(state.sheetUrl)}" />
-        ${normalLink && !canWrite ? `<div class="rp-cloud-err">Hozir oddiy <b>/edit</b> havola turibdi. U faqat Google yozuvi ulanganda ishlaydi; nashr qilingan havola <b>/d/e/.../pub</b> bilan boshlanadi.</div>` : ''}
+          Chiqqan havolani shu yerga qo'ying.</p>
+        <input class="rp-cloud-input" id="f-sheet-url" data-draft="sheeturl" placeholder="https://docs.google.com/spreadsheets/..." value="${esc(state.sheetUrl)}" />
         ${state.sheetMsg ? `<div class="${state.sheetMsg.bad ? 'rp-cloud-err' : 'rp-cloud-ok'}">${esc(state.sheetMsg.text)}</div>` : ''}
-        ${cloud && cloud.sheetsError ? `<div class="rp-cloud-err">Google yozish ulanmagan: ${esc(cloud.sheetsError)}</div>` : ''}
-        ${cloud && cloud.sheetsConnected ? `<div class="rp-cloud-ok">Google yozish ulangan${cloud.sheetsEmail ? ': ' + esc(cloud.sheetsEmail) : ''}</div>` : ''}
         <button class="rp-save-btn" data-action="sheet-save"${state.sheetBusy ? ' disabled' : ''}>${state.sheetBusy ? 'Ulanmoqda...' : 'Saqlash va o\'qish'}</button>
-        ${!canWrite
-          ? `<button class="rp-add-btn" data-action="sheet-connect-google">Google orqali yozishni ulash</button>`
-          : `<button class="rp-add-btn" data-action="sheet-push"${state.sheetWriteBusy ? ' disabled' : ''}>${state.sheetWriteBusy ? 'Yozilmoqda...' : 'Kutubxonani Sheetga yozish'}</button>`}
         ${state.sheetUrl ? `<button class="rp-add-btn" data-action="sheet-clear">Jadvalni uzish</button>` : ''}
-        <p class="rp-note rp-note-small">Google yozuvi uchun bu yerga Sheetning oddiy <b>/edit</b> havolasini qo'ying va Sheetda <b>Matn</b>, <b>Reels matni</b>, <b>Draft matn</b> yoki <b>Script</b> sarlavhali ustun bo'lishi shart. Token faqat shu brauzer sessiyasida saqlanadi.</p>
+        <p class="rp-note rp-note-small">Jadvalda birinchi ustun — matn, ikkinchisi (ixtiyoriy) — mavzu. Bitta qator = bitta matn.</p>
+        <div class="rp-diag">
+          <div class="rp-bridge-title">Ishlamasa — zaxira yo'l</div>
+          <button class="rp-add-btn" data-action="open-import-scripts">Matnlarni qo'lda qo'yish</button>
+          <p class="rp-note rp-note-small">Jadvaldagi ustunni nusxalab qo'yasiz. Natija bir xil.</p>
+        </div>
       </div>
     </div>`;
 }
 
 function renderSplitModal(){
-  const pool = availableScripts().length;
+  const pool = unusedScripts().length;
   const n = Math.max(0, Math.min(Number(state.splitCount) || 0, pool));
-  const plan = scriptReservePlan(toKey(new Date()), n, state.contentPerDay);
-  const splitFrom = splitStart(toKey(new Date()));
-  const dates = n ? nextFreeDates(n, parseKey(splitFrom), plan.perDay) : [];
+  const dates = n ? nextFreeDates(n, new Date()) : [];
   return `
     <div class="rp-modal-overlay" data-action="close-split">
       <div class="rp-modal rp-modal-tall" data-action="noop">
         <div class="rp-modal-header"><span>Kunlarga bo'lish</span><button class="rp-icon-btn" data-action="close-split">&#10005;</button></div>
-        <p class="rp-note">${esc(fmtUz(parseKey(splitFrom)))}dan boshlab ishlatilmagan matnlarni bo'sh kunlarga taqsimlaydi. Siz qo'ygan tayyor video kunlari o'tkazib yuboriladi; kuniga ${plan.perDay} tadan.</p>
+        <p class="rp-note">Navbatdagi matnlardan kerakligini olib, bo'sh kunlarga bittadan taqsimlaydi. Band kunlar o'tkazib yuboriladi.</p>
         <label class="rp-field"><span>Nechta matn (navbatda ${pool} ta)</span>
           <input id="f-split" type="number" min="1" max="${pool}" data-draft="split" value="${esc(state.splitCount)}" placeholder="${Math.min(pool, 7)}" />
         </label>
         ${n ? `<div class="rp-import-box">
             <div class="rp-import-row"><span>Birinchi kun</span><b>${esc(fmtUz(parseKey(dates[0])))}</b></div>
             <div class="rp-import-row"><span>Oxirgi kun</span><b>${esc(fmtUz(parseKey(dates[dates.length - 1])))}</b></div>
-            <div class="rp-import-msg">${n} ta matn band kunlarni bosmasdan taqsimlanadi.</div>
+            <div class="rp-import-msg">${n} ta matn ${n} kunga taqsimlanadi.</div>
           </div>` : ''}
         <button class="rp-save-btn" data-action="do-split"${n ? '' : ' disabled'}>Taqsimlash</button>
       </div>
     </div>`;
-}
-
-function renderShootBatches(){
-  const batches = state.shootBatches.filter(b => b.status === 'shooting');
-  if (!batches.length) return '';
-  return `<div class="rp-sec-label">S'yomka sessiyalari <i>${batches.length}</i></div><div class="rp-shoot-list">
-    ${batches.map(b => {
-      const shot = new Set(b.shotIds);
-      const planned = !!(b.postIds && b.postIds.length);
-      const items = planned
-        ? b.postIds.map(id => { const post = state.posts.find(p => p.id === id); return post && { id, post, sc:state.scripts.find(sc => sc.id === post.scriptId) }; }).filter(Boolean)
-        : b.scriptIds.map(id => ({ id, post:null, sc:state.scripts.find(sc => sc.id === id) })).filter(x => x.sc);
-      return `<div class="rp-shoot-card">
-        <div class="rp-shoot-head"><b>${esc(b.code)}</b><span>${esc(b.label)}</span></div>
-        <div class="rp-shoot-meta">${b.outfit ? 'Kiyim: ' + esc(b.outfit) : 'Kiyim ko\'rsatilmagan'}${b.location ? ' · Lokatsiya: ' + esc(b.location) : ''}<br>${items.length} ta matn · ${shot.size} ta olindi · ${planned ? 'chiqish sanalari saqlanadi' : b.gapDays + ' kun oralatib'}</div>
-        <div class="rp-shoot-scripts">${items.map((item, i) => {
-          const done = shot.has(item.id), sc = item.sc;
-          return `<div class="rp-shoot-script${done ? ' rp-shoot-script-done' : ''}"><span>${i + 1}</span>${item.post ? `<b class="rp-shoot-date">${esc(fmtUz(parseKey(item.post.date)))}</b>` : ''}<div>${esc(sc ? sc.text : item.post.title)}</div>${sc ? `<button class="rp-link-btn" data-action="copy-script" data-id="${esc(sc.id)}">Nusxa</button>` : ''}<button class="rp-link-btn" data-action="toggle-batch-shot" data-batch="${esc(b.id)}" data-id="${esc(item.id)}">${done ? '✓ Olindi' : 'Olindi deb belgilash'}</button></div>`;
-        }).join('')}</div>
-        ${planned && shot.size && shot.size < items.length ? `<div class="rp-import-msg">Qolgan ${items.length - shot.size} ta matn keyingi s'yomka tanloviga qaytadi.</div>` : ''}
-        <div class="rp-shoot-actions"><button class="rp-save-btn" data-action="finalize-batch" data-id="${esc(b.id)}"${shot.size ? '' : ' disabled'}>${shot.size ? (planned ? shot.size + ' ta olinganni tasdiqlash' : shot.size + ' tasini sochib joylash') : 'Avval olinganlarini belgilang'}</button><button class="rp-link-btn" data-action="cancel-batch" data-id="${esc(b.id)}">Bekor qilish</button></div>
-      </div>`;
-    }).join('')}
-  </div>`;
-}
-
-function renderFuturePosts(posts, todayKey){
-  if (!posts.length) return '';
-  const months = new Map();
-  for (const p of posts) {
-    const key = p.date.slice(0, 7);
-    if (!months.has(key)) months.set(key, []);
-    months.get(key).push(p);
-  }
-  return `<div class="rp-sec-label rp-future-label">Keyingi kunlar</div>
-    ${Array.from(months.entries()).map(([key, list]) => {
-      const d = parseKey(key + '-01');
-      return `<section class="rp-month-block">
-        <div class="rp-month-title">${esc(MONTHS_UZ[d.getMonth()])} <span>${d.getFullYear()}</span><i>${list.length}</i></div>
-        <div class="rp-list">${list.map(p => renderPostCard(p, todayKey)).join('')}</div>
-      </section>`;
-    }).join('')}`;
-}
-
-function renderContentSettingsModal(){
-  const todayKey = toKey(new Date());
-  const plan = scriptReservePlan(todayKey, availableScripts().length, state.contentPerDay);
-  const nextMonth = shiftMonthKey(todayKey.slice(0, 7) + '-01', 1);
-  return `<div class="rp-modal-overlay" data-action="close-content-settings"><div class="rp-modal" data-action="noop">
-    <div class="rp-modal-header"><span>Hisob sozlamasi</span><button class="rp-icon-btn" data-action="close-content-settings">&#10005;</button></div>
-    <label class="rp-field"><span>Kuniga nechta Reel</span>
-      <select id="f-content-per-day" data-action="noop">${[1,2,3,4,5].map(n => `<option value="${n}"${plan.perDay === n ? ' selected' : ''}>${n} ta</option>`).join('')}</select>
-    </label>
-    <label class="rp-field"><span>Nashr boshlanish sanasi</span>
-      <input id="f-content-start" type="date" value="${esc(plan.start)}" ${plan.locked ? 'disabled' : ''} />
-    </label>
-    <button class="rp-link-btn rp-content-start-preset" data-action="set-content-start-next-month" data-date="${nextMonth}">${esc(fmtUz(parseKey(nextMonth)))}dan boshlash</button>
-    <p class="rp-note rp-note-small">Bu sanadan oldingi kontent hisobga kirmaydi. Keyin zaxira faqat bo'sh kunlarga joylashib hisoblanadi.</p>
-    <button class="rp-save-btn" data-action="save-content-settings">Saqlash</button>
-  </div></div>`;
 }
 
 function renderFunnel(st){
@@ -3317,8 +2760,6 @@ function renderPostCard(p, todayKey){
     ? (p.date === todayKey ? 'Bugun' : fmtUz(parseKey(p.date)))
     : 'Zaxira';
   const late = p.date && p.date < todayKey && !p.montajAt;
-  const hasScript = !!(p.scriptId && state.scripts.some(sc => sc.id === p.scriptId));
-  const outfit = legacyPostMeta(p, 'outfit'), location = legacyPostMeta(p, 'location');
   return `
     <div class="rp-card rp-post">
       <div class="rp-post-top">
@@ -3327,7 +2768,6 @@ function renderPostCard(p, todayKey){
         <div class="rp-post-title">${esc(p.title)}</div>
         <button class="rp-icon-btn" data-action="delete-post" data-id="${esc(p.id)}" aria-label="O'chirish">&#10005;</button>
       </div>
-      ${(outfit || location) ? `<div class="rp-post-meta">${outfit ? `<span>Kiyim: ${esc(outfit)}</span>` : ''}${location ? `<span>Lokatsiya: ${esc(location)}</span>` : ''}</div>` : ''}
       <div class="rp-stage-row">
         ${CONTENT_STAGES.map(sg => `
           <button class="rp-stage${stageOn(p, sg.id) ? ' rp-stage-on rp-stage-' + sg.id : ''}"
@@ -3335,7 +2775,6 @@ function renderPostCard(p, todayKey){
             <span class="rp-stage-tick">${stageOn(p, sg.id) ? '&#10003;' : ''}</span>${sg.label}
           </button>`).join('')}
       </div>
-      ${hasScript ? `<button class="rp-link-btn rp-post-script-link" data-action="open-script-viewer" data-id="${esc(p.scriptId)}">Matnni ko'rish &middot; Nusxa olish</button>` : ''}
     </div>`;
 }
 
@@ -3348,131 +2787,18 @@ function renderAddPostModal(today){
           <input id="f-post-title" placeholder="Masalan: 3 ta arabcha so'z" maxlength="300" />
         </label>
         <label class="rp-field"><span>Qaysi kunga (ixtiyoriy)</span>
-          <input id="f-post-date" type="date" value="${esc(splitStart(toKey(today)))}" />
+          <input id="f-post-date" type="date" value="" />
         </label>
-        <label class="rp-check-row"><input id="f-post-video-ready" type="checkbox" /> <span>Video tayyor <i>— Matn ham tayyor deb belgilanadi</i></span></label>
         <button class="rp-save-btn" data-action="save-post">Qo'shish</button>
-        <p class="rp-note rp-note-small">Tayyor video uchun nom va sanani kiriting. Shu sana keyingi avtomatik taqsimlashda band deb olinadi.</p>
+        <p class="rp-note rp-note-small">Sanani bo'sh qoldirsangiz zaxiraga tushadi.</p>
       </div>
     </div>`;
-}
-
-function parseReadyDates(raw){
-  const found = new Set();
-  const chunks = String(raw || '').split(/[\s,;]+/).filter(Boolean);
-  for (const part of chunks) {
-    let m = part.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
-    let key = m ? `${m[1]}-${pad(m[2])}-${pad(m[3])}` : '';
-    if (!key) {
-      m = part.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
-      if (m) key = `${m[3]}-${pad(m[2])}-${pad(m[1])}`;
-    }
-    if (isValidDateKey(key)) found.add(key);
-  }
-  return Array.from(found).sort();
-}
-
-function addReadyDays(raw){
-  const dates = parseReadyDates(raw);
-  const busy = busyDates();
-  const fresh = dates.filter(d => !busy.has(d));
-  if (!fresh.length) return { added:0, skipped:dates.length, invalid:!dates.length };
-  const now = Date.now();
-  const add = fresh.map(date => ({
-    id: uid(), title:'Tayyor video', ref:'', date, scriptId:null, note:'', createdAt:now, editedAt:now,
-    matnAt:now, videoAt:now, montajAt:null,
-  }));
-  state.posts = state.posts.concat(add);
-  commit();
-  return { added:add.length, skipped:dates.length - add.length, invalid:false };
-}
-
-function shiftMonthKey(key, delta){
-  const [year, month] = String(key || '').slice(0, 7).split('-').map(Number);
-  const d = new Date((year || new Date().getFullYear()), (month || 1) - 1 + delta, 1);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-01`;
-}
-
-function renderReadyDaysModal(){
-  const todayKey = toKey(new Date());
-  const fallback = splitStart(todayKey).slice(0, 7) + '-01';
-  const monthKey = /^\d{4}-\d{2}-01$/.test(state.readyDaysMonth) ? state.readyDaysMonth : fallback;
-  const [year, month] = monthKey.slice(0, 7).split('-').map(Number);
-  const firstWeekday = (new Date(year, month - 1, 1).getDay() + 6) % 7;
-  const days = new Date(year, month, 0).getDate();
-  const selected = new Set(state.readyDaysSelected || []);
-  const busy = busyDates();
-  const cells = [];
-  for (let i = 0; i < firstWeekday; i++) cells.push('<span class="rp-ready-cal-blank"></span>');
-  for (let day = 1; day <= days; day++) {
-    const key = `${year}-${pad(month)}-${pad(day)}`;
-    const taken = busy.has(key);
-    const checked = selected.has(key);
-    cells.push(`<button class="rp-ready-day${checked ? ' rp-ready-day-on' : ''}${taken ? ' rp-ready-day-taken' : ''}${key === todayKey ? ' rp-ready-day-today' : ''}" data-action="toggle-ready-date" data-date="${key}"${taken ? ' disabled' : ''}><span>${day}</span><i>${taken ? 'Rejada' : (checked ? '✓' : '')}</i></button>`);
-  }
-  return `<div class="rp-modal-overlay" data-action="close-ready-days"><div class="rp-modal rp-modal-tall" data-action="noop">
-    <div class="rp-modal-header"><span>Tayyor kunlarni belgilash</span><button class="rp-icon-btn" data-action="close-ready-days">&#10005;</button></div>
-    <p class="rp-note">Video tayyor bo'lgan kunlarni bosing. Belgilangan kunda <b>✓</b> chiqadi va avto-taqsimlash uni chetlab o'tadi.</p>
-    <div class="rp-ready-cal-head"><button class="rp-icon-btn" data-action="shift-ready-month" data-delta="-1" aria-label="Oldingi oy">‹</button><b>${MONTHS_UZ[month - 1]} ${year}</b><button class="rp-icon-btn" data-action="shift-ready-month" data-delta="1" aria-label="Keyingi oy">›</button></div>
-    <div class="rp-ready-weekdays"><span>Du</span><span>Se</span><span>Ch</span><span>Pa</span><span>Ju</span><span>Sh</span><span>Ya</span></div>
-    <div class="rp-ready-calendar">${cells.join('')}</div>
-    <div class="rp-import-box"><div class="rp-import-row"><span>Belgilandi</span><b>${selected.size} ta kun</b></div><div class="rp-import-msg">“Rejada” yozilgan kunlar band; ular qayta qo'shilmaydi.</div></div>
-    <button class="rp-save-btn" data-action="save-ready-days"${selected.size ? '' : ' disabled'}>${selected.size ? selected.size + ' ta tayyor kunni saqlash' : 'Avval kunni ✓ qiling'}</button>
-  </div></div>`;
-}
-
-function renderShootBatchModal(today){
-  const d = state.shootBatchDraft || {};
-  const pool = plannedShootPool(toKey(today));
-  const count = Math.max(1, Math.min(pool.length || 1, Math.floor(Number(d.count) || Math.min(5, pool.length || 1))));
-  const outfits = shootMetaOptions('outfit').slice(0, 8);
-  const locations = shootMetaOptions('location').slice(0, 8);
-  const picks = autoPlannedShootPosts(count, d.outfit || '', d.location || '', toKey(today));
-  const spread = shootDateSpread(picks);
-  const metaChoices = (field, values) => values.length ? `<div class="rp-meta-choices"><span>Avval ishlatilgan:</span>${values.map(value => `<button type="button" data-action="set-shoot-meta" data-field="${field}" data-value="${esc(value)}">${esc(value)}</button>`).join('')}</div>` : '';
-  return `<div class="rp-modal-overlay" data-action="close-shoot-batch"><div class="rp-modal rp-modal-tall" data-action="noop">
-    <div class="rp-modal-header"><span>S'yomka sessiyasi</span><button class="rp-icon-btn" data-action="close-shoot-batch">&#10005;</button></div>
-    <p class="rp-note">Nechta video olishingizni ayting. App rejalangan, hali olinmagan matnlarni butun zaxira bo'ylab turli sanalardan tanlaydi.</p>
-    <label class="rp-field"><span>Sessiya nomi</span><input id="f-batch-label" data-draft="shootbatch" data-field="label" value="${esc(d.label || '')}" placeholder="Masalan: Qora kostyum — ofis" maxlength="80" /></label>
-    <div class="rp-batch-fields"><div><label class="rp-field"><span>Kiyim <i>ixtiyoriy</i></span><input id="f-batch-outfit" data-draft="shootbatch" data-field="outfit" list="rp-outfit-options" value="${esc(d.outfit || '')}" placeholder="Oq futbolka" maxlength="60" /></label>${metaChoices('outfit', outfits)}</div><div><label class="rp-field"><span>Lokatsiya <i>ixtiyoriy</i></span><input id="f-batch-location" data-draft="shootbatch" data-field="location" list="rp-location-options" value="${esc(d.location || '')}" placeholder="Ofis" maxlength="60" /></label>${metaChoices('location', locations)}</div></div>
-    <datalist id="rp-outfit-options">${outfits.map(x => `<option value="${esc(x)}"></option>`).join('')}</datalist><datalist id="rp-location-options">${locations.map(x => `<option value="${esc(x)}"></option>`).join('')}</datalist>
-    <label class="rp-field"><span>Nechta video olasiz</span><select id="f-batch-count" data-draft="shootbatch" data-field="count">${Array.from({length:Math.min(12, Math.max(1, pool.length))}, (_,i) => i + 1).map(n => `<option value="${n}"${count === n ? ' selected' : ''}>${n} ta</option>`).join('')}</select></label>
-    <div class="rp-batch-picker-head"><b>App tanlagan matnlar</b><span>${picks.length} ta · ${esc(spread || 'bitta sana')}</span></div>
-    <div class="rp-batch-picker">${picks.length ? picks.map((post, i) => { const sc = state.scripts.find(x => x.id === post.scriptId); return `<div class="rp-batch-option rp-batch-option-on"><span>${i + 1}</span><div><i>${esc(fmtUz(parseKey(post.date)))}da chiqadi</i>${esc(sc ? sc.text : post.title)}</div></div>`; }).join('') : '<div class="rp-empty">Avval matnlarni “Kunlarga bo\'l” orqali rejalashtiring</div>'}</div>
-    <div class="rp-import-box"><div class="rp-import-row"><span>Rejada olinmagan matn</span><b>${pool.length} ta</b></div><div class="rp-import-msg">Oraliq qattiq belgilanmaydi: mavjud reja qisqa bo'lsa yaqinroq, uzoq bo'lsa kengroq sanalar tanlanadi. Video olingach chiqish sanasi o'zgarmaydi.</div></div>
-    <button class="rp-save-btn" data-action="create-shoot-batch"${picks.length ? '' : ' disabled'}>${picks.length ? picks.length + ' ta matnni sessiyaga olish' : 'Rejalangan matn yo\'q'}</button>
-  </div></div>`;
-}
-
-function renderScheduleScriptModal(today){
-  const sc = state.scripts.find(x => x.id === state.schedulingScriptId);
-  if (!sc) return '';
-  const suggested = splitStart(toKey(today));
-  return `<div class="rp-modal-overlay" data-action="close-schedule-script"><div class="rp-modal" data-action="noop">
-    <div class="rp-modal-header"><span>Matnni kunga qo'yish</span><button class="rp-icon-btn" data-action="close-schedule-script">&#10005;</button></div>
-    <div class="rp-script-preview">${esc(sc.text.slice(0, 500))}${sc.text.length > 500 ? '&hellip;' : ''}</div>
-    <label class="rp-field"><span>Sana</span><input id="f-script-date" type="date" value="${esc(suggested)}" /></label>
-    <p class="rp-note rp-note-small">Bu sana band bo'lsa ham siz qo'lda qo'yishingiz mumkin. Avto-taqsimlash esa band kunlarni o'tkazib yuboradi.</p>
-    <button class="rp-save-btn" data-action="schedule-script" data-id="${esc(sc.id)}">Shu kunga qo'yish</button>
-  </div></div>`;
-}
-
-function renderScriptViewerModal(){
-  const sc = state.scripts.find(x => x.id === state.viewingScriptId);
-  if (!sc) return '';
-  return `<div class="rp-modal-overlay" data-action="close-script-viewer"><div class="rp-modal rp-modal-tall rp-script-reader" data-action="noop">
-    <div class="rp-modal-header"><span>Reels matni</span><button class="rp-icon-btn" data-action="close-script-viewer">&#10005;</button></div>
-    ${sc.tag ? `<div class="rp-lib-tag">${esc(sc.tag)}</div>` : ''}
-    <div class="rp-teleprompter-text">${esc(sc.text)}</div>
-    <button class="rp-save-btn" data-action="copy-script" data-id="${esc(sc.id)}">Teleprompter uchun nusxa olish</button>
-    <p class="rp-note rp-note-small">Nusxa olingach, teleprompter ilovasida qo'yib yuboring.</p>
-  </div></div>`;
 }
 
 function renderLibraryModal(){
   const rows = libraryRows();
   const total = state.scripts.length;
-  const yangi = availableScripts().length;
+  const yangi = state.scripts.filter(x => !isScriptUsed(x.id)).length;
   const shown = rows.slice(0, 80);
   const filters = [['yangi', 'Ishlatilmagan'], ['ishlatilgan', 'Ishlatilgan'], ['hammasi', 'Hammasi']];
   return `
@@ -3480,7 +2806,6 @@ function renderLibraryModal(){
       <div class="rp-modal rp-modal-tall" data-action="noop">
         <div class="rp-modal-header"><span>Matn kutubxonasi</span><button class="rp-icon-btn" data-action="close-library">&#10005;</button></div>
         <div class="rp-lib-stat">${yangi} ta ishlatilmagan &middot; jami ${total}</div>
-        <button class="rp-save-btn" data-action="open-add-script">Reels matni yozish</button>
         <button class="rp-add-btn" data-action="open-import-scripts">Matnlarni qo'yish</button>
         ${total === 0 ? `<p class="rp-note">Google Sheets'da ustunni belgilab nusxalang, keyin shu tugmani bosib qo'ying.</p>` : `
           <input class="rp-cloud-input" id="f-lib-q" data-draft="libq" placeholder="Qidirish..." value="${esc(state.libQuery)}" />
@@ -3489,15 +2814,12 @@ function renderLibraryModal(){
           </div>
           <div class="rp-lib-list">
             ${shown.length === 0 ? `<div class="rp-empty">Topilmadi</div>` : shown.map(sc => {
-              const used = isScriptUsed(sc.id), reserved = isScriptReserved(sc.id);
+              const used = isScriptUsed(sc.id);
               return `<div class="rp-lib-row${used ? ' rp-lib-used' : ''}">
                 ${sc.tag ? `<div class="rp-lib-tag">${esc(sc.tag)}</div>` : ''}
                 <div class="rp-lib-text">${esc(sc.text.slice(0, 260))}${sc.text.length > 260 ? '&hellip;' : ''}</div>
                 <div class="rp-lib-acts">
-                  <button class="rp-link-btn" data-action="copy-script" data-id="${esc(sc.id)}">Nusxa olish</button>
-                  <button class="rp-link-btn" data-action="open-script-viewer" data-id="${esc(sc.id)}">To'liq ko'rish</button>
-                  ${used || reserved ? '' : `<button class="rp-link-btn" data-action="schedule-script-open" data-id="${esc(sc.id)}">Kunga qo'yish</button>`}
-                  ${reserved ? `<span class="rp-lib-reserved">S'yomkada band</span>` : `<button class="rp-link-btn" data-action="script-to-post" data-id="${esc(sc.id)}">Kontent qilish</button>`}
+                  <button class="rp-link-btn" data-action="script-to-post" data-id="${esc(sc.id)}">Kontent qilish</button>
                   <button class="rp-link-btn" data-action="toggle-used" data-id="${esc(sc.id)}">${used ? 'Ishlatilmagan deb belgilash' : 'Ishlatilgan deb belgilash'}</button>
                 </div>
               </div>`;
@@ -3550,7 +2872,7 @@ function renderImportScriptsModal(){
               <button class="rp-link-btn" data-action="cancel-scripts">Bekor qilish</button>
             </div>
           </div>` : `<button class="rp-save-btn" data-action="preview-scripts">Tekshirish</button>`}
-        <p class="rp-note rp-note-small">Matnlarning o'zi Google Sheetda turadi; qurilmalar orasida reja, ishlatilgan holat va Sheet manzili sinxronlanadi.</p>
+        <p class="rp-note rp-note-small">Matnlar shu qurilmada va zaxira faylida saqlanadi. Bulutga faqat qaysilari ishlatilgani yuboriladi.</p>
       </div>
     </div>`;
 }
@@ -3560,25 +2882,8 @@ function renderImportScriptsModal(){
 // ochasiz, o'qiysiz, olasiz yoki boshqasini so'raysiz.
 function unusedScripts(){ return state.scripts.filter(x => !isScriptUsed(x.id)); }
 
-function assignedScriptIds(){
-  return new Set(state.posts.map(p => p.scriptId).filter(Boolean));
-}
-
-function plannedUnfilmedScriptIds(){
-  return new Set(state.posts.filter(p => p.scriptId && !p.videoAt).map(p => p.scriptId));
-}
-
-function reconcileScheduledScriptUsage(){
-  const pending = plannedUnfilmedScriptIds();
-  if (!pending.size) return false;
-  const next = state.usedScripts.filter(id => !pending.has(id));
-  if (next.length === state.usedScripts.length) return false;
-  state.usedScripts = next;
-  return true;
-}
-
 function pickNextScript(skipCurrent){
-  const pool = availableScripts();
+  const pool = unusedScripts();
   if (!pool.length) { state.pickedScriptId = null; return; }
   if (!skipCurrent || !state.pickedScriptId) { state.pickedScriptId = pool[0].id; return; }
   const i = pool.findIndex(x => x.id === state.pickedScriptId);
@@ -3632,7 +2937,7 @@ function renderReportModal(){
 }
 
 function renderPickModal(){
-  const pool = availableScripts();
+  const pool = unusedScripts();
   const sc = pool.find(x => x.id === state.pickedScriptId) || pool[0] || null;
   const idx = sc ? pool.findIndex(x => x.id === sc.id) + 1 : 0;
   return `
@@ -4201,18 +3506,6 @@ const handlers = {
   'idea-to-task': (btn) => ideaToTask(btn.dataset.id),
 
   'open-capture': () => { ideaDraft = ''; state.editingIdeaId = null; state.showCapture = true; render(); },
-  'open-quick-add': () => { state.showQuickAdd = true; render(); },
-  'close-quick-add': () => { state.showQuickAdd = false; render(); },
-  'quick-idea': () => { state.showQuickAdd = false; ideaDraft = ''; state.editingIdeaId = null; state.showCapture = true; render(); },
-  'quick-script': () => { state.showQuickAdd = false; state.appScriptDraft = ''; state.showAddScript = true; render(); },
-  'open-add-script': () => { state.appScriptDraft = ''; state.showAddScript = true; render(); },
-  'close-add-script': () => { state.showAddScript = false; state.appScriptDraft = ''; render(); },
-  'save-app-script': () => {
-    const el = document.getElementById('f-app-script');
-    state.appScriptDraft = (el && el.value) || state.appScriptDraft;
-    if (!addAppScript(state.appScriptDraft)) return;
-    state.showAddScript = false; state.appScriptDraft = ''; render(); toast('Matn zaxiraga qo\'shildi');
-  },
   'close-capture': () => { state.showCapture = false; state.editingIdeaId = null; ideaDraft = ''; render(); },
   'edit-idea': (btn) => editIdea(btn.dataset.id),
   'save-idea': () => addIdea(),
@@ -4261,30 +3554,12 @@ const handlers = {
   'save-post': () => {
     const t = document.getElementById('f-post-title');
     const d = document.getElementById('f-post-date');
-    const video = document.getElementById('f-post-video-ready');
     const title = ((t && t.value) || '').trim();
     if (!title) { toast('Nom kiriting'); return; }
-    addPost(title, (d && d.value) || null, null, video && video.checked ? 'video' : null);
+    addPost(title, (d && d.value) || null, null);
     state.showAddPost = false;
     render();
   },
-  'open-ready-days': () => { state.readyDaysDraft = ''; state.readyDaysSelected = []; state.readyDaysMonth = splitStart(toKey(new Date())).slice(0, 7) + '-01'; state.showReadyDays = true; render(); },
-  'close-ready-days': () => { state.showReadyDays = false; state.readyDaysDraft = ''; state.readyDaysSelected = []; render(); },
-  'save-ready-days': () => {
-    state.readyDaysDraft = (state.readyDaysSelected || []).join('\n');
-    const result = addReadyDays(state.readyDaysDraft);
-    if (result.invalid) { toast('Avval kunni ✓ qiling'); return; }
-    state.showReadyDays = false; state.readyDaysDraft = ''; state.readyDaysSelected = []; render();
-    toast(result.added + ' ta tayyor kun belgilandi' + (result.skipped ? '; ' + result.skipped + ' tasi avvaldan bor' : ''));
-  },
-  'toggle-ready-date': (btn) => {
-    const key = btn.dataset.date;
-    if (!isValidDateKey(key) || busyDates().has(key)) return;
-    const selected = new Set(state.readyDaysSelected || []);
-    if (selected.has(key)) selected.delete(key); else selected.add(key);
-    state.readyDaysSelected = Array.from(selected).sort(); render();
-  },
-  'shift-ready-month': (btn) => { state.readyDaysMonth = shiftMonthKey(state.readyDaysMonth || (splitStart(toKey(new Date())).slice(0, 7) + '-01'), Number(btn.dataset.delta) || 0); render(); },
   'toggle-stage': (btn) => togglePostStage(btn.dataset.id, btn.dataset.stage),
   'delete-post': (btn) => deletePost(btn.dataset.id),
   'toggle-past': () => { state.showPastPosts = !state.showPastPosts; render(); },
@@ -4293,15 +3568,6 @@ const handlers = {
   'close-library': () => { state.showLibrary = false; render(); },
   'lib-filter': (btn) => { state.libFilter = btn.dataset.f; render(); },
   'toggle-used': (btn) => { markScriptUsed(btn.dataset.id, !isScriptUsed(btn.dataset.id)); render(); },
-  'copy-script': (btn) => copyScriptText(btn.dataset.id),
-  'open-script-viewer': (btn) => { state.viewingScriptId = btn.dataset.id; state.showScriptViewer = true; render(); },
-  'close-script-viewer': () => { state.showScriptViewer = false; state.viewingScriptId = null; render(); },
-  'schedule-script-open': (btn) => { state.schedulingScriptId = btn.dataset.id; state.showScheduleScript = true; render(); },
-  'close-schedule-script': () => { state.showScheduleScript = false; state.schedulingScriptId = null; render(); },
-  'schedule-script': (btn) => {
-    const date = document.getElementById('f-script-date');
-    if (!scheduleScriptToDate(btn.dataset.id, date && date.value)) toast('To\'g\'ri sana tanlang');
-  },
   'script-to-post': (btn) => scriptToPost(btn.dataset.id),
 
   'open-import-scripts': () => { state.showImportScripts = true; state.scriptPreview = null; state.importRaw = ''; state.importMode = 'auto'; render(); },
@@ -4327,69 +3593,25 @@ const handlers = {
   },
   'sheet-clear': () => { state.sheetUrl = ''; state.sheetMsg = null; commit(); render(); },
   'sheet-sync': () => fetchSheet(false),
-  'sheet-connect-google': () => {
-    const c = window.rejamCloud;
-    if (!c || !c.connectSheets) { toast('Google ulanishi mavjud emas'); return; }
-    c.connectSheets().then(ok => {
-      // Cloud xatosi modalning o'zida chiqadi; uni sheetMsgga ham yozsak bitta
-      // muammo ikki qizil kartaga aylanib qoladi.
-      if (!ok && !c.sheetsError) { state.sheetMsg = { bad:true, text:c.error || 'Google ulanmadi' }; render(); }
-    });
-  },
-  'sheet-push': () => syncAppScriptsToSheet(false),
 
-  'open-shoot-batch': () => {
-    const open = () => { state.shootBatchDraft = { count:Math.min(5, plannedShootPool(toKey(new Date())).length || 1) }; state.showShootBatch = true; render(); };
-    if (sheetCsvUrl(state.sheetUrl)) fetchSheet(true).then(open); else open();
+  'open-export': () => { state.showExport = true; state.exportMonth = defaultExportMonth(); render(); },
+  'close-export': () => { state.showExport = false; render(); },
+  'export-month': (btn) => { state.exportMonth = btn.dataset.m; render(); },
+  'export-prompt': () => { state.exportPrompt = !state.exportPrompt; render(); },
+  'export-copy': () => {
+    const ex = buildMonthExport(state.exportMonth || defaultExportMonth(), state.exportPrompt);
+    navigator.clipboard.writeText(ex.text)
+      .then(() => toast(ex.count + ' kunlik reja nusxalandi'))
+      .catch(() => toast('Nusxa olib bo\'lmadi — "Fayl qilib yuborish"ni bosing'));
   },
-  'close-shoot-batch': () => { state.showShootBatch = false; state.shootBatchDraft = null; render(); },
-  'create-shoot-batch': () => {
-    const read = id => (document.getElementById(id) || {}).value || '';
-    const batch = createPlannedShootBatch({ label:read('f-batch-label'), outfit:read('f-batch-outfit'), location:read('f-batch-location'), count:read('f-batch-count') });
-    if (!batch) { toast('Avval matnlarni kunlarga rejalashtiring'); return; }
-    state.showShootBatch = false; state.shootBatchDraft = null; render();
-    toast(batch.postIds.length + ' ta turli sanadagi matn sessiyaga olindi');
-  },
-  'toggle-batch-script': (btn) => {
-    const draft = state.shootBatchDraft || {};
-    const selected = new Set(draft.scriptIds || []);
-    if (selected.has(btn.dataset.id)) selected.delete(btn.dataset.id); else selected.add(btn.dataset.id);
-    state.shootBatchDraft = Object.assign({}, draft, { scriptIds:Array.from(selected) }); render();
-  },
-  'toggle-all-batch-scripts': () => {
-    const draft = state.shootBatchDraft || {};
-    const ids = availableScripts().map(sc => sc.id);
-    const allSelected = ids.length > 0 && ids.every(id => (draft.scriptIds || []).includes(id));
-    state.shootBatchDraft = Object.assign({}, draft, { scriptIds:allSelected ? [] : ids }); render();
-  },
-  'set-shoot-meta': (btn) => {
-    const field = btn.dataset.field === 'location' ? 'location' : 'outfit';
-    state.shootBatchDraft = Object.assign({}, state.shootBatchDraft || {}, { [field]:btn.dataset.value || '' });
-    render();
-  },
-  'toggle-batch-shot': (btn) => toggleBatchShot(btn.dataset.batch, btn.dataset.id),
-  'finalize-batch': (btn) => { if (!finalizeShootBatch(btn.dataset.id)) toast('Avval olingan videolarni belgilang'); },
-  'cancel-batch': (btn) => cancelShootBatch(btn.dataset.id),
+  'export-share': () => shareMonthExport(state.exportMonth || defaultExportMonth(), state.exportPrompt),
 
-  'open-split': () => { state.showSplit = true; state.splitCount = String(Math.min(availableScripts().length, 7)); render(); },
+  'open-split': () => { state.showSplit = true; state.splitCount = String(Math.min(unusedScripts().length, 7)); render(); },
   'close-split': () => { state.showSplit = false; render(); },
   'do-split': () => {
     const n = splitIntoDays(state.splitCount);
     state.showSplit = false; render();
     toast(n ? n + ' ta matn kunlarga bo\'lindi' : 'Bo\'linmadi');
-  },
-  'open-content-settings': () => { state.showContentSettings = true; render(); },
-  'close-content-settings': () => { state.showContentSettings = false; render(); },
-  'save-content-settings': () => {
-    const per = document.getElementById('f-content-per-day');
-    const start = document.getElementById('f-content-start');
-    state.contentPerDay = Math.max(1, Math.min(10, Math.floor(Number(per && per.value) || 1)));
-    if (!reserveStart(toKey(new Date())).locked) state.contentStartDate = isValidDateKey(start && start.value) ? start.value : '';
-    state.showContentSettings = false; commit(); render();
-  },
-  'set-content-start-next-month': (btn) => {
-    state.contentStartDate = btn.dataset.date;
-    commit(); render();
   },
 
   'open-reel-import': () => { state.showReelImport = true; state.reelPreview = null; state.reelRaw = ''; render(); },
@@ -4498,21 +3720,11 @@ document.addEventListener('input', (e) => {
   const el = e.target;
   if (el.dataset && el.dataset.draft === 'newcat') state.newCatName = el.value;
   else if (el.dataset && el.dataset.draft === 'idea') ideaDraft = el.value;
-  else if (el.dataset && el.dataset.draft === 'appscript') state.appScriptDraft = el.value;
   else if (el.dataset && el.dataset.draft === 'plan') planDraft[el.dataset.field] = el.value;
   else if (el.dataset && el.dataset.draft === 'task') taskDraft[el.dataset.field] = el.value;
-  else if (el.dataset && el.dataset.draft === 'shootbatch') {
-    state.shootBatchDraft = Object.assign({}, state.shootBatchDraft || {}, { [el.dataset.field]:el.value });
-    if (el.dataset.field === 'count') render();
-  }
   else if (el.id === 'f-report-date') { state.reportDate = el.value; render(); }
   else if (el.dataset && el.dataset.draft === 'sheeturl') { state.sheetUrl = el.value; }
   else if (el.dataset && el.dataset.draft === 'split') { state.splitCount = el.value; render(); }
-  else if (el.dataset && el.dataset.draft === 'contentq') {
-    state.contentQuery = el.value;
-    const box = document.getElementById('content-search-results');
-    if (box) box.innerHTML = renderContentSearchResults(toKey(new Date()));
-  }
   else if (el.dataset && el.dataset.draft === 'libq') {
     // Qidiruvda render() maydonni qayta yaratadi va fokus yo'qoladi - shuning uchun
     // faqat ro'yxat qismini yangilaymiz.
@@ -4521,15 +3733,12 @@ document.addEventListener('input', (e) => {
     if (box) {
       const rows = libraryRows().slice(0, 80);
       box.innerHTML = rows.length === 0 ? '<div class="rp-empty">Topilmadi</div>' : rows.map(sc => {
-        const used = isScriptUsed(sc.id), reserved = isScriptReserved(sc.id);
+        const used = isScriptUsed(sc.id);
         return '<div class="rp-lib-row' + (used ? ' rp-lib-used' : '') + '">' +
           (sc.tag ? '<div class="rp-lib-tag">' + esc(sc.tag) + '</div>' : '') +
           '<div class="rp-lib-text">' + esc(sc.text.slice(0, 260)) + (sc.text.length > 260 ? '&hellip;' : '') + '</div>' +
           '<div class="rp-lib-acts">' +
-            '<button class="rp-link-btn" data-action="copy-script" data-id="' + esc(sc.id) + '">Nusxa olish</button>' +
-            '<button class="rp-link-btn" data-action="open-script-viewer" data-id="' + esc(sc.id) + '">To\'liq ko\'rish</button>' +
-            (used || reserved ? '' : '<button class="rp-link-btn" data-action="schedule-script-open" data-id="' + esc(sc.id) + '">Kunga qo\'yish</button>') +
-            (reserved ? '<span class="rp-lib-reserved">S\'yomkada band</span>' : '<button class="rp-link-btn" data-action="script-to-post" data-id="' + esc(sc.id) + '">Kontent qilish</button>') +
+            '<button class="rp-link-btn" data-action="script-to-post" data-id="' + esc(sc.id) + '">Kontent qilish</button>' +
             '<button class="rp-link-btn" data-action="toggle-used" data-id="' + esc(sc.id) + '">' +
               (used ? 'Ishlatilmagan deb belgilash' : 'Ishlatilgan deb belgilash') + '</button>' +
           '</div></div>';
@@ -4561,15 +3770,8 @@ document.addEventListener('change', (e) => {
 // Ilova fonga ketganda / yopilayotganda ham yozib qo'yamiz
 // Ilova fonga ketganda saqlanmagan holat qolsa qayta urinib ko'ramiz
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') {
-    if (state.pendingEnvelope) retrySave();
-    return;
-  }
-  setTimeout(() => autoRefreshSheet(true), 150);
+  if (document.visibilityState === 'hidden' && state.pendingEnvelope) retrySave();
 });
-window.addEventListener('pageshow', () => setTimeout(() => autoRefreshSheet(false), 200));
-window.addEventListener('focus', () => setTimeout(() => autoRefreshSheet(false), 200));
-setInterval(() => autoRefreshSheet(false), 60000);
 
 // iOS'da klaviatura ochilganda oyna klaviatura ostida qolib ketardi.
 // visualViewport balandligini CSS'ga uzatamiz - modal shu balandlikka moslashadi.

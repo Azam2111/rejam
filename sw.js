@@ -1,4 +1,4 @@
-const CACHE_NAME = 'rejam-v47';
+const CACHE_NAME = 'rejam-v24';
 const ASSETS = ['./index.html', './style.css', './app.js', './sync-engine.js', './cloud.js', './firebase-config.js', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {
