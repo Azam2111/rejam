@@ -572,3 +572,10 @@ body {
 .rp-check { display:flex; align-items:center; gap:9px; font-size:13px; color:#5A4B3A; margin:14px 0 10px; cursor:pointer; }
 .rp-check input { width:18px; height:18px; accent-color:#C08A2E; }
 .rp-export-preview { background:#FBF8F2; border:1px solid #EBDFC7; border-radius:12px; padding:12px 13px; font-size:12.5px; line-height:1.5; color:#3A2A1C; white-space:pre-wrap; word-break:break-word; max-height:260px; overflow-y:auto; margin-bottom:14px; }
+
+/* ---------- Videosiz qolgan kunlar ---------- */
+.rp-pending { border:1px solid #E4C6BB; background:#F9EEE9; border-radius:14px; padding:13px 15px; margin-top:14px; }
+.rp-pending-title { font-family:'Fraunces',serif; font-weight:600; font-size:15px; color:#9B3F26; }
+.rp-pending-dates { font-size:12.5px; color:#7A6D58; margin-top:4px; line-height:1.45; }
+.rp-pending-warn { font-size:12.5px; color:#9B3F26; margin-top:6px; }
+.rp-pending-acts { display:flex; align-items:center; gap:14px; margin-top:11px; }
