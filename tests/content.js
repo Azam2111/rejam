@@ -672,6 +672,107 @@ function serve(port){
   check('kiyim va lokatsiya avvalgi qiymatlardan takrorlanmas ro\'yxat bo\'ladi', meta.outfits.length === 1 && meta.locations.length === 1 && meta.canonical === meta.outfits[0], JSON.stringify(meta));
   check('bir xil kiyim yaqin sanaga ketma-ket qo\'yilmaydi', JSON.stringify(meta.dates) === JSON.stringify(['2026-10-06','2026-10-11']), JSON.stringify(meta.dates));
 
+  group('VIDEOSIZ QOLGAN KUNLAR');
+  await clear();
+  const pend = await page.evaluate(async () => {
+    state.contentPerDay = 1;
+    const k = d => { const r = new Date(); r.setDate(r.getDate() + d); return toKey(r); };
+    state.scripts = Array.from({length:10}, (_,i) => ({ id:'pn-sc-'+i, text:'Videosiz matn '+(i+1), tag:'', source:'app', createdAt:i+1 }));
+    state.posts = Array.from({length:10}, (_,i) => ({
+      id:'pn-post-'+i, title:'Videosiz matn '+(i+1), date:k(5+i), scriptId:'pn-sc-'+i,
+      note:'', createdAt:1, editedAt:1, matnAt:1, videoAt:null, montajAt:null
+    }));
+    const b = createPlannedShootBatch({ count:10, outfit:'Ko\'k ko\'ylak', location:'Studiya' });
+    const left = b.postIds.slice(8);
+    b.postIds.slice(0, 8).forEach(id => toggleBatchShot(b.id, id));
+    const done = finalizeShootBatch(b.id);
+    const batch = state.shootBatches.find(x => x.id === b.id);
+    await commit();
+    return {
+      done, left, saved:(batch.pendingPostIds || []).slice().sort(),
+      status:batch.status, pending:pendingShootPosts().map(p => p.id).sort(),
+      dates:pendingShootPosts().map(p => p.date),
+      wasDates:left.map(id => state.posts.find(p => p.id === id).date),
+    };
+  });
+  check('10 tadan 8 tasi olinsa 2 kun videosiz deb belgilanadi',
+    pend.done === 8 && pend.saved.length === 2 && JSON.stringify(pend.pending) === JSON.stringify(pend.left.slice().sort()),
+    JSON.stringify(pend));
+  check('sessiya baribir yakunlanadi', pend.status === 'scheduled', pend.status);
+
+  await boot();
+  const pendReload = await page.evaluate(() => ({
+    saved:(state.shootBatches[0] && state.shootBatches[0].pendingPostIds || []).length,
+    pending:pendingShootPosts().length,
+  }));
+  check('videosiz kunlar qayta yuklangandan keyin ham qoladi', pendReload.saved === 2 && pendReload.pending === 2, JSON.stringify(pendReload));
+
+  await page.evaluate(() => { state.tab = 'kontent'; render(); });
+  await page.waitForTimeout(150);
+  const pendUi = await page.evaluate(() => document.body.innerText);
+  check('ekranda ogohlantirish chiqadi', /2 ta kun videosiz qoldi/.test(pendUi), pendUi.slice(0, 400));
+  check('ekranda tanlov tugmalari bor', /Bo'sh kunlarga sur/.test(pendUi) && /O'z kunida qolsin/.test(pendUi));
+
+  const moved = await page.evaluate(async () => {
+    const before = pendingShootPosts().map(p => p.date);
+    const busyBefore = state.posts.filter(p => p.videoAt).map(p => p.date);
+    const n = reschedulePendingShoots();
+    const k = d => { const r = new Date(); r.setDate(r.getDate() + d); return toKey(r); };
+    return {
+      n, before, busyBefore,
+      after:state.posts.filter(p => !p.videoAt).map(p => p.date).sort(),
+      today:k(0), tomorrow:k(1),
+      stillFilmed:state.posts.filter(p => p.videoAt).length,
+      filmedDates:state.posts.filter(p => p.videoAt).map(p => p.date).sort(),
+      pending:pendingShootPosts().length,
+      total:state.posts.length,
+    };
+  });
+  check('bo\'sh kunlarga surish bugundan boshlab joylaydi',
+    moved.n === 2 && JSON.stringify(moved.after) === JSON.stringify([moved.today, moved.tomorrow].sort()), JSON.stringify(moved));
+  check('surishda band kunlar ustiga yozilmaydi',
+    !moved.after.some(d => moved.busyBefore.includes(d)) && moved.total === 10 && moved.stillFilmed === 8
+    && JSON.stringify(moved.filmedDates) === JSON.stringify(moved.busyBefore.slice().sort()), JSON.stringify(moved));
+  check('surilgandan keyin ogohlantirish yo\'qoladi', moved.pending === 0, JSON.stringify(moved));
+  check('ekrandan ham ketadi', !/kun videosiz qoldi/.test(await page.evaluate(() => { render(); return document.body.innerText; })));
+
+  const kept = await page.evaluate(() => {
+    const k = d => { const r = new Date(); r.setDate(r.getDate() + d); return toKey(r); };
+    state.posts = [
+      { id:'kp1', title:'Qolsin 1', date:k(3), scriptId:null, note:'', createdAt:1, editedAt:1, matnAt:1, videoAt:null, montajAt:null },
+      { id:'kp2', title:'Qolsin 2', date:k(4), scriptId:null, note:'', createdAt:1, editedAt:1, matnAt:1, videoAt:null, montajAt:null },
+    ];
+    state.shootBatches = [{ id:'kb', code:'SY-KEEP-01', label:'Sessiya', outfit:'', location:'', scriptIds:[], postIds:['kp1','kp2'],
+      shotIds:[], gapDays:5, startDate:k(3), status:'scheduled', scheduledPostIds:[], pendingPostIds:['kp1','kp2'], createdAt:1 }];
+    const before = pendingShootPosts().length;
+    clearPendingShoots(); commit();
+    return { before, after:pendingShootPosts().length, dates:state.posts.map(p => p.date), want:[k(3), k(4)] };
+  });
+  check('"o\'z kunida qolsin" sanalarni o\'zgartirmaydi',
+    kept.before === 2 && kept.after === 0 && JSON.stringify(kept.dates) === JSON.stringify(kept.want), JSON.stringify(kept));
+
+  const pastWarn = await page.evaluate(() => {
+    const k = d => { const r = new Date(); r.setDate(r.getDate() + d); return toKey(r); };
+    state.posts = [{ id:'pw1', title:'O\'tgan kun', date:k(-3), scriptId:null, note:'', createdAt:1, editedAt:1, matnAt:1, videoAt:null, montajAt:null }];
+    state.shootBatches = [{ id:'pwb', code:'SY-PAST-01', label:'Sessiya', outfit:'', location:'', scriptIds:[], postIds:['pw1'],
+      shotIds:[], gapDays:5, startDate:k(-3), status:'scheduled', scheduledPostIds:[], pendingPostIds:['pw1'], createdAt:1 }];
+    return renderPendingShoots();
+  });
+  check('kuni o\'tib ketganlar alohida ogohlantiriladi', /1 tasining kuni allaqachon o'tib ketgan/.test(pastWarn), pastWarn.slice(0, 300));
+
+  const noAuto = await page.evaluate(() => /pendingPostIds:pending/.test(finalizeShootBatch.toString()) && !/reschedulePendingShoots\(\)/.test(finalizeShootBatch.toString()));
+  check('sessiya yakunlanganda reja o\'z-o\'zidan surilmaydi (faqat so\'ralganda)', noAuto === true);
+
+  const videoDone = await page.evaluate(() => {
+    const k = d => { const r = new Date(); r.setDate(r.getDate() + d); return toKey(r); };
+    state.posts = [{ id:'vd1', title:'Keyin olindi', date:k(2), scriptId:null, note:'', createdAt:1, editedAt:1, matnAt:1, videoAt:Date.now(), montajAt:null }];
+    state.shootBatches = [{ id:'vdb', code:'SY-VD-01', label:'Sessiya', outfit:'', location:'', scriptIds:[], postIds:['vd1'],
+      shotIds:[], gapDays:5, startDate:k(2), status:'scheduled', scheduledPostIds:[], pendingPostIds:['vd1'], createdAt:1 }];
+    return pendingShootPosts().length;
+  });
+  check('keyinroq video olinsa ogohlantirish o\'zi yo\'qoladi', videoDone === 0, String(videoDone));
+  await clear();
+
   group('OYLIK EKSPORT');
   await clear();
   await page.evaluate(() => {
