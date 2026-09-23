@@ -2210,6 +2210,8 @@ function validateShootBatch(raw, seen, issues){
     startDate: isValidDateKey(raw.startDate) ? raw.startDate : toKey(new Date()),
     status: raw.status === 'scheduled' ? 'scheduled' : 'shooting',
     scheduledPostIds: Array.isArray(raw.scheduledPostIds) ? raw.scheduledPostIds.map(String).filter(x => ID_RE.test(x)).slice(0, 20) : [],
+    // Sessiya yakunlanganda suratga tushmay qolgan rejalangan kunlar
+    pendingPostIds: Array.isArray(raw.pendingPostIds) ? raw.pendingPostIds.map(String).filter(x => ID_RE.test(x)).slice(0, 20) : [],
     createdAt: finiteNum(raw.createdAt) || Date.now(),
   };
 }
@@ -2948,9 +2950,14 @@ function finalizeShootBatch(batchId){
       });
     });
     state.usedScripts = Array.from(new Set(state.usedScripts.concat(changed.map(p => p.scriptId).filter(Boolean))));
-    state.shootBatches = state.shootBatches.map(x => x.id === b.id ? Object.assign({}, x, { status:'scheduled', scheduledPostIds:changed.map(p => p.id) }) : x);
+    // Suratga tushmay qolganlar o'z kunida videosiz qoladi. Ularni JIM qoldirmaymiz:
+    // o'sha kun kelib o'tsa, "falon sanagacha tayyor" hisobi o'sha yerda to'xtaydi.
+    const pending = b.postIds.filter(id => !shot.has(id));
+    state.shootBatches = state.shootBatches.map(x => x.id === b.id
+      ? Object.assign({}, x, { status:'scheduled', scheduledPostIds:changed.map(p => p.id), pendingPostIds:pending })
+      : x);
     commit(); render();
-    toast(changed.length + ' ta video olindi — rejalangan sanalari o\'zgarmadi');
+    toast(changed.length + ' ta video olindi' + (pending.length ? ' — ' + pending.length + ' ta kun videosiz qoldi' : ''));
     return changed.length;
   }
   const scripts = b.shotIds.map(id => state.scripts.find(sc => sc.id === id)).filter(Boolean);
@@ -2975,6 +2982,72 @@ function cancelShootBatch(batchId){
   if (!b) return;
   state.shootBatches = state.shootBatches.filter(x => x.id !== batchId); commit(); render();
   toast(b.postIds && b.postIds.length ? 'Sessiya bekor qilindi — reja o\'zgarmadi' : 'Sessiya bekor qilindi — matnlar zaxirada qoldi');
+}
+
+// ---------- Videosiz qolgan rejalangan kunlar ----------
+function pendingShootPostIds(){
+  const ids = new Set();
+  for (const b of state.shootBatches) for (const id of (b.pendingPostIds || [])) ids.add(id);
+  return ids;
+}
+
+function pendingShootPosts(){
+  const ids = pendingShootPostIds();
+  return state.posts
+    .filter(p => ids.has(p.id) && p.date && !p.videoAt)
+    .sort((a, b) => a.date < b.date ? -1 : (a.date > b.date ? 1 : 0));
+}
+
+function clearPendingShoots(){
+  state.shootBatches = state.shootBatches.map(b =>
+    (b.pendingPostIds && b.pendingPostIds.length) ? Object.assign({}, b, { pendingPostIds: [] }) : b);
+}
+
+// Bo'sh kunlarga suradi. O'z eski kunlari bo'shaydi, shuning uchun band kunlar
+// ro'yxatidan aynan shu postlar chiqarib tashlanadi.
+function reschedulePendingShoots(){
+  const list = pendingShootPosts();
+  if (!list.length) { clearPendingShoots(); commit(); return 0; }
+  const moving = new Set(list.map(p => p.id));
+  const busy = new Set(state.posts.filter(p => p.date && !moving.has(p.id)).map(p => p.date));
+  const daily = Math.max(1, Math.min(10, Math.floor(Number(state.contentPerDay) || 1)));
+  const todayKey = toKey(new Date());
+  const dates = [];
+  let d = parseKey(todayKey), guard = 0;
+  while (dates.length < list.length && guard++ < 2000) {
+    const k = toKey(d);
+    if (k >= todayKey && !busy.has(k)) {
+      for (let i = 0; i < daily && dates.length < list.length; i++) dates.push(k);
+      busy.add(k);
+    }
+    d = addDays(d, 1);
+  }
+  const byId = new Map(list.map((p, i) => [p.id, dates[i]]));
+  const now = Date.now();
+  state.posts = state.posts.map(p => byId.has(p.id)
+    ? Object.assign({}, p, { date: byId.get(p.id), editedAt: now })
+    : p);
+  clearPendingShoots();
+  commit();
+  return list.length;
+}
+
+function renderPendingShoots(){
+  const list = pendingShootPosts();
+  if (!list.length) return '';
+  const todayKey = toKey(new Date());
+  const past = list.filter(p => p.date < todayKey).length;
+  const sanalar = list.slice(0, 6).map(p => fmtUz(parseKey(p.date))).join(', ');
+  return `
+    <div class="rp-pending">
+      <div class="rp-pending-title">${list.length} ta kun videosiz qoldi</div>
+      <div class="rp-pending-dates">${esc(sanalar)}${list.length > 6 ? ' va yana ' + (list.length - 6) + ' ta' : ''}</div>
+      ${past ? `<div class="rp-pending-warn">${past} tasining kuni allaqachon o'tib ketgan.</div>` : ''}
+      <div class="rp-pending-acts">
+        <button class="rp-bank-btn" data-action="reschedule-pending">Bo'sh kunlarga sur</button>
+        <button class="rp-link-btn" data-action="dismiss-pending">O'z kunida qolsin</button>
+      </div>
+    </div>`;
 }
 
 function scriptToPost(id){
@@ -3185,6 +3258,7 @@ function renderContentTab(today){
     <div class="rp-content-search"><input class="rp-cloud-input" id="f-content-q" data-draft="contentq" placeholder="Kiyim, lokatsiya, kod yoki matndan qidiring..." value="${esc(state.contentQuery)}" /><div id="content-search-results">${renderContentSearchResults(todayKey)}</div></div>
     <div class="rp-schedule-guide"><b>Avval tayyor videolarni sanaga qo'ying.</b> Keyin &laquo;Kunlarga bo'l&raquo; matnlarni faqat bo'sh kunlarga joylaydi.</div>
     ${renderShootBatches()}
+    ${renderPendingShoots()}
     ${bosh}
     ${sec('Bugun', bugun)}
     ${renderFuturePosts(keyin, todayKey)}
@@ -4498,6 +4572,12 @@ const handlers = {
   'finalize-batch': (btn) => { if (!finalizeShootBatch(btn.dataset.id)) toast('Avval olingan videolarni belgilang'); },
   'cancel-batch': (btn) => cancelShootBatch(btn.dataset.id),
 
+  'reschedule-pending': () => {
+    const n = reschedulePendingShoots();
+    render();
+    toast(n ? n + ' ta kontent bo\'sh kunlarga surildi' : 'Suriladigan kontent yo\'q');
+  },
+  'dismiss-pending': () => { clearPendingShoots(); commit(); render(); },
   'open-export': () => { state.showExport = true; state.exportMonth = defaultExportMonth(); render(); },
   'close-export': () => { state.showExport = false; render(); },
   'export-month': (btn) => { state.exportMonth = btn.dataset.m; render(); },
