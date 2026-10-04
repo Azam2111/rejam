@@ -21,7 +21,17 @@
 <script src="app.js"></script>
 <script>
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+  // Yangi versiya o'rnatilganda sahifa o'zi bir marta yangilanadi (ikkinchi marta ochish shart emas).
+  // Oyna ochiq bo'lsa (matn yozilayotgan bo'lishi mumkin) — yopilguncha kutadi, yozilgan narsa yo'qolmaydi.
+  const hadController = !!navigator.serviceWorker.controller;
+  let swReloaded = false;
+  const swReloadWhenIdle = () => {
+    if (swReloaded) return;
+    if (document.querySelector('.rp-modal-overlay')) { setTimeout(swReloadWhenIdle, 1500); return; }
+    swReloaded = true; location.reload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) swReloadWhenIdle(); });
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').then(r => r.update()).catch(() => {}));
 }
 </script>
 </body>
