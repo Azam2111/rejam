@@ -550,6 +550,28 @@ function serve(port){
   check('Sheetdan o\'chgan source:sheet zaxiradan chiqadi', await page.evaluate(() => !state.scripts.some(s => s.text === 'Sheet ketadi')));
   check('Sheetdan o\'chsa ham source:app qoladi', await page.evaluate(() => state.scripts.some(s => s.text === 'App qoladi')));
 
+  group('REELS MATNI KUNGA QO\'YISH (bolim 120)');
+  r = await page.evaluate(() => {
+    state.scripts = []; state.usedScripts = []; state.posts = []; state.contentStartDate = '';
+    const p = addAppScriptToDay('Kunga qo\'yiladigan reels matni', '2026-10-07');
+    return { p, scripts: state.scripts.length, posts: state.posts.filter(x => x.date === '2026-10-07').length,
+             linked: !!(p && state.scripts.some(sc => sc.id === p.scriptId)), matn: !!(p && p.matnAt),
+             avail: availableScripts().length };
+  });
+  check('matn kutubxonaga tushadi', r.scripts === 1, JSON.stringify(r));
+  check('tanlangan kunda kontent kartasi paydo bo\'ladi', r.posts === 1 && r.linked && r.matn, JSON.stringify(r));
+  check('kunga qo\'yilgan matn bo\'sh zaxirada qolmaydi', r.avail === 0, JSON.stringify(r));
+  r = await page.evaluate(() => { const p = addAppScriptToDay('Kunga qo\'yiladigan reels matni', '2026-10-08'); return { p, n: state.posts.length }; });
+  check('xuddi shu matn ikkinchi marta kunga qo\'yilmaydi', r.p === null && r.n === 1, JSON.stringify(r));
+  r = await page.evaluate(() => { state.scripts = []; state.posts = []; addAppScript('Avval zaxirada edi'); const p = addAppScriptToDay('Avval zaxirada edi', '2026-10-09'); return { ok: !!p, s: state.scripts.length }; });
+  check('zaxiradagi matnni keyin kunga qo\'ysa dublikat yaratmaydi', r.ok && r.s === 1, JSON.stringify(r));
+  r = await page.evaluate(() => { state.posts = [{ id:'b1', title:'x', date:'2099-01-01', scriptId:null, matnAt:1, videoAt:null, montajAt:null }]; state.contentStartDate = '2099-01-01'; return appScriptDefaultDate(); });
+  check('standart sana birinchi BO\'SH kun', r === '2099-01-02', r);
+  r = await page.evaluate(() => { state.posts = []; state.contentStartDate = ''; state.showAddScript = true; render();
+    const has = !!document.querySelector('[data-action="save-app-script-day"]') && !!document.getElementById('f-app-script-date');
+    state.showAddScript = false; render(); return has; });
+  check('oynada sana va "Kunga qo\'yish" tugmasi bor', r === true);
+
   // 1–5-oktabrning hammasi band bo'lsa, zaxira 6-oktabrdan boshlanadi.
   const reserveWithPlan = await page.evaluate(() => {
     state.contentStartDate = '2026-10-01';

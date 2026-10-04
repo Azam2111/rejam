@@ -2227,9 +2227,13 @@ function renderQuickAddModal(){
 function renderAddScriptModal(){
   return `<div class="rp-modal-overlay" data-action="close-add-script"><div class="rp-modal rp-modal-tall" data-action="noop">
     <div class="rp-modal-header"><span>Reels matni yozish</span><button class="rp-icon-btn" data-action="close-add-script">&#10005;</button></div>
-    <p class="rp-note">Tayyor Reels matnini yozing yoki shu yerga qo'ying. U darhol Matn kutubxonasiga tushadi.</p>
+    <p class="rp-note">Tayyor Reels matnini yozing yoki shu yerga qo'ying. <b>Kunga qo'yish</b> — matn kutubxonaga tushadi va tanlangan kunda darhol ko'rinadi. <b>Faqat zaxiraga</b> — kunga qo'yilmaydi, keyin "Kunlarga bo'l" orqali taqsimlanadi.</p>
     <textarea id="f-app-script" class="rp-idea-input rp-script-input" data-draft="appscript" rows="9" placeholder="Reels matni...">${esc(state.appScriptDraft)}</textarea>
-    <button class="rp-save-btn" data-action="save-app-script">Zaxiraga qo'shish</button>
+    <label class="rp-field"><span>Qaysi kunga</span>
+      <input id="f-app-script-date" type="date" value="${esc(appScriptDefaultDate())}" />
+    </label>
+    <button class="rp-save-btn" data-action="save-app-script-day">Kunga qo'yish</button>
+    <button class="rp-add-btn" data-action="save-app-script">Faqat zaxiraga</button>
   </div></div>`;
 }
 
@@ -2564,6 +2568,27 @@ function autoRefreshSheet(force){
   if (!isPublishedSheetUrl(state.sheetUrl) && !(cloud && cloud.sheetsConnected)) return;
   if (!force && Date.now() - Number(state.sheetFetchedAt || 0) < 60000) return;
   fetchSheet(true);
+}
+
+// "Reels matni yozish" oynasidagi sana: birinchi bo'sh kun (Kunlarga bo'l bilan bir xil qoida).
+function appScriptDefaultDate(){
+  const todayKey = toKey(new Date());
+  return nextFreeDates(1, parseKey(splitStart(todayKey)), 1)[0] || todayKey;
+}
+
+// Matnni kutubxonaga qo'shib, darhol shu kunga kontent kartasi sifatida qo'yadi.
+function addAppScriptToDay(raw, date){
+  if (!isValidDateKey(date)) { toast('Sanani tanlang'); return null; }
+  const text = String(raw == null ? '' : raw).trim().slice(0, 8000);
+  if (!text) { toast('Matnni yozing'); return null; }
+  const id = scriptKey(text);
+  const existing = state.scripts.find(sc => scriptKey(sc.text) === id);
+  if (existing && state.posts.some(p => p.scriptId === existing.id && p.date)) {
+    toast('Bu matn allaqachon kunga qo\'yilgan');
+    return null;
+  }
+  if (!existing && !addAppScript(text)) return null;
+  return addPost(text.replace(/\s+/g, ' ').trim().slice(0, 70), date, id);
 }
 
 function addAppScript(raw){
@@ -4408,6 +4433,15 @@ const handlers = {
   'quick-script': () => { state.showQuickAdd = false; state.appScriptDraft = ''; state.showAddScript = true; render(); },
   'open-add-script': () => { state.appScriptDraft = ''; state.showAddScript = true; render(); },
   'close-add-script': () => { state.showAddScript = false; state.appScriptDraft = ''; render(); },
+  'save-app-script-day': () => {
+    const el = document.getElementById('f-app-script');
+    const dEl = document.getElementById('f-app-script-date');
+    state.appScriptDraft = (el && el.value) || state.appScriptDraft;
+    const p = addAppScriptToDay(state.appScriptDraft, dEl && dEl.value);
+    if (!p) return;
+    state.showAddScript = false; state.appScriptDraft = ''; render();
+    toast(fmtUz(parseKey(p.date)) + ' kuniga qo\'yildi');
+  },
   'save-app-script': () => {
     const el = document.getElementById('f-app-script');
     state.appScriptDraft = (el && el.value) || state.appScriptDraft;
