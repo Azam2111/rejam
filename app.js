@@ -1878,9 +1878,7 @@ function render(){
   app.innerHTML = `
     ${renderHeader(today)}
     ${renderSaveError()}
-    ${renderBanner(today)}
-    ${renderIdeaNudge()}
-    ${renderBackupNudge()}
+    ${renderNotices(today)}
     ${renderTabbar()}
     <div id="tab-content">${renderTab(today)}</div>
     ${state.showAddPlan ? renderAddPlanModal(today) : ''}
@@ -1919,17 +1917,27 @@ function render(){
   }
 }
 
+const TAB_TITLES = { rejalar:'Rejalar', kunlik:'Kunlik', kontent:'Kontent', hisobot:'Hisobot', fikrlar:'Fikrlar' };
+
 function renderHeader(today){
   return `
     <header class="rp-header">
       <div class="rp-header-row">
-        <div>
-          <div class="rp-header-date">${fmtUz(today)}</div>
-          <h1 class="rp-title">Rejam</h1>
+        <div class="rp-header-titles">
+          <div class="rp-header-date"><span class="rp-brand-mark">Rejam</span> &middot; ${WEEKDAYS_FULL[weekdayIdx(today)]}, ${fmtUz(today)}</div>
+          <h1 class="rp-title">${TAB_TITLES[state.tab] || 'Rejam'}</h1>
         </div>
-        <button class="rp-gear-btn" data-action="open-backup" aria-label="Zaxira">&#9881;</button>
+        <button class="rp-gear-btn" data-action="open-backup" aria-label="Zaxira va sozlamalar">${ICONS.gear}</button>
       </div>
     </header>`;
+}
+
+// Ogohlantirishlar bitta ixcham qatorda: bittasi bo'lsa to'liq kenglik,
+// bir nechta bo'lsa yonma-yon suriladigan kartalar (tepadagi joyni yemaydi).
+function renderNotices(today){
+  const items = [renderBanner(today), renderIdeaNudge(), renderBackupNudge()].filter(x => x && x.trim());
+  if (!items.length) return '';
+  return `<div class="rp-notices${items.length > 1 ? ' rp-notices-multi' : ''}">${items.join('')}</div>`;
 }
 
 function renderBackupNudge(){
@@ -2126,16 +2134,25 @@ function renderBanner(today){
     </div>`;
 }
 
+const ICONS = {
+  gear:'<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+  rejalar:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/></svg>',
+  kunlik:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="16" rx="3"/><path d="M8 3v3M16 3v3M3.5 9.5h17"/><path d="M8.5 14.5l2.2 2.2 4.8-4.7"/></svg>',
+  kontent:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2.5" width="14" height="19" rx="3"/><path d="M10.5 9.2v5.6l4.4-2.8z" fill="currentColor"/></svg>',
+  hisobot:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16"/><rect x="6" y="11" width="3" height="6" rx="1"/><rect x="10.5" y="6" width="3" height="11" rx="1"/><rect x="15" y="13" width="3" height="4" rx="1"/></svg>',
+  fikrlar:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.7.5 1.1 1.3 1.1 2.2h5c0-.9.4-1.7 1.1-2.2A6 6 0 0 0 12 3z"/></svg>',
+};
+
 function renderTabbar(){
   const n = state.ideas.length;
   const tabs = [['rejalar','Rejalar'], ['kunlik','Kunlik'], ['kontent','Kontent'], ['hisobot','Hisobot'], ['fikrlar','Fikrlar']];
-  return `<div class="rp-tabbar">
+  return `<nav class="rp-tabbar" aria-label="Bo'limlar">
     ${tabs.map(([id,label]) => {
       const hasBadge = (id==='fikrlar' && n>0 && state.tab!=='fikrlar');
       const badge = hasBadge ? `<i class="rp-badge">${n > 99 ? '99+' : n}</i>` : '';
-      return `<button class="rp-tab${state.tab===id?' rp-tab-active':''}${hasBadge?' rp-tab-has-badge':''}" data-action="set-tab" data-tab="${id}">${label}${badge}</button>`;
+      return `<button class="rp-tab${state.tab===id?' rp-tab-active':''}${hasBadge?' rp-tab-has-badge':''}" data-action="set-tab" data-tab="${id}"${state.tab===id?' aria-current="page"':''}><span class="rp-tab-ico">${ICONS[id]}${badge}</span><span class="rp-tab-lbl">${label}</span></button>`;
     }).join('')}
-  </div>`;
+  </nav>`;
 }
 
 function renderIdeaNudge(){
@@ -4423,7 +4440,7 @@ function renderChartSvg(rawData, color, period){
 }
 
 const handlers = {
-  'set-tab': (btn) => { state.tab = btn.dataset.tab; render(); },
+  'set-tab': (btn) => { const changed = state.tab !== btn.dataset.tab; state.tab = btn.dataset.tab; render(); if (changed) window.scrollTo(0, 0); },
   'plan-tomorrow': () => {
     state.tab = 'kunlik';
     state.selectedDayKey = toKey(addDays(new Date(),1));

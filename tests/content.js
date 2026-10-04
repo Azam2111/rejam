@@ -33,6 +33,9 @@ function serve(port){
   const browser = await chromium.launch();
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
+  // Testlardagi sanalar (1-oktabr, 2026-10-02 ...) "bugun"ga bog'liq. Haqiqiy soatda
+  // ular kun o'tishi bilan eskirib yiqilardi — shuning uchun soat qotiriladi (taymerlar emas).
+  await page.clock.setFixedTime(new Date('2026-09-23T10:00:00+03:00'));
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
 
