@@ -3339,6 +3339,14 @@ function postSearchText(post){
     .filter(Boolean).join(' ').toLocaleLowerCase('uz');
 }
 
+function unplacedScriptMatches(words){
+  const placed = new Set(state.posts.filter(p => p.date).map(p => p.scriptId).filter(Boolean));
+  return state.scripts.filter(sc => !placed.has(sc.id)).filter(sc => {
+    const hay = [sc.text, sc.tag].filter(Boolean).join(' ').toLocaleLowerCase('uz');
+    return words.every(w => hay.includes(w));
+  }).slice().reverse(); // eng yangisi tepada
+}
+
 function renderContentSearchResults(todayKey){
   const raw = String(state.contentQuery || '').trim();
   if (!raw) return '';
@@ -3347,8 +3355,20 @@ function renderContentSearchResults(todayKey){
     const haystack = postSearchText(post);
     return words.every(word => haystack.includes(word));
   });
-  if (!matches.length) return `<div class="rp-search-empty">“${esc(raw)}” bo'yicha rejalangan video topilmadi.</div>`;
-  return `<div class="rp-sec-label rp-search-label">Qidiruv natijasi <i>${matches.length}</i></div><div class="rp-list rp-search-list">${matches.map(post => renderPostCard(post, todayKey)).join('')}</div>`;
+  // Kunga qo'yilmagan matnlar ham qidiruvda chiqsin — aks holda "Faqat zaxiraga"
+  // saqlangan matn hech qayerda ko'rinmaydi (bo'lim 120).
+  const lib = unplacedScriptMatches(words);
+  if (!matches.length && !lib.length) return `<div class="rp-search-empty">“${esc(raw)}” bo'yicha na rejalangan video, na kutubxonadagi matn topilmadi.</div>`;
+  return (matches.length ? `<div class="rp-sec-label rp-search-label">Rejalangan <i>${matches.length}</i></div><div class="rp-list rp-search-list">${matches.map(post => renderPostCard(post, todayKey)).join('')}</div>` : '')
+    + (lib.length ? `<div class="rp-sec-label rp-search-label">Kunga qo'yilmagan matn <i>${lib.length}</i></div><div class="rp-list rp-search-list">${lib.slice(0, 20).map(sc => {
+        const reserved = isScriptReserved(sc.id), used = isScriptUsed(sc.id);
+        return `<div class="rp-lib-row${used ? ' rp-lib-used' : ''}">
+          <div class="rp-lib-text">${esc(sc.text.slice(0, 200))}${sc.text.length > 200 ? '&hellip;' : ''}</div>
+          <div class="rp-lib-acts">
+            ${reserved ? `<span class="rp-lib-reserved">S'yomkada band</span>` : (used ? `<span class="rp-lib-reserved">Ishlatilgan</span>` : `<button class="rp-link-btn" data-action="schedule-script-open" data-id="${esc(sc.id)}">Kunga qo'yish</button>`)}
+            <button class="rp-link-btn" data-action="open-script-viewer" data-id="${esc(sc.id)}">To'liq ko'rish</button>
+          </div></div>`;
+      }).join('')}</div>` : '');
 }
 
 // Eng muhim ikki raqam: qaysi sanagacha tayyor, va nechta matn navbatda.
@@ -3390,6 +3410,7 @@ function renderScriptBank(yangi){
           : `<button class="rp-bank-btn" data-action="open-sheet">Jadvalni ulash</button>`}
         ${yangi ? `<button class="rp-bank-btn rp-bank-btn2" data-action="open-split">Kunlarga bo'l</button>` : ''}
       </div>
+      <button class="rp-link-btn rp-bank-link" data-action="open-library">Matn kutubxonasi (${state.scripts.length})</button>
       <button class="rp-link-btn rp-bank-link" data-action="open-content-settings">Hisob sozlamasi</button>
       ${planned ? `<button class="rp-link-btn rp-bank-link" data-action="open-shoot-batch">S'yomka uchun matn olish</button>` : ''}
       ${shootingCount() ? `<div class="rp-bank-msg">${shootingCount()} ta matn s'yomka sessiyasida band</div>` : ''}

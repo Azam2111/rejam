@@ -572,6 +572,18 @@ function serve(port){
     state.showAddScript = false; render(); return has; });
   check('oynada sana va "Kunga qo\'yish" tugmasi bor', r === true);
 
+  r = await page.evaluate(() => {
+    state.scripts = []; state.posts = []; state.usedScripts = [];
+    addAppScript('Faqat zaxiradagi maxsus soz reels');
+    addAppScriptToDay('Kundagi boshqa reels', '2099-02-02');
+    state.contentQuery = 'maxsus soz'; const a = renderContentSearchResults('2099-01-01');
+    state.contentQuery = 'boshqa reels'; const b = renderContentSearchResults('2099-01-01');
+    state.contentQuery = ''; render();
+    return { a, b, lib: !!document.querySelector('[data-action="open-library"]') };
+  });
+  check('qidiruv kunga qo\'yilmagan matnni ham topadi', /Kunga qo'yilmagan matn/.test(r.a) && /maxsus soz/.test(r.a) && /schedule-script-open/.test(r.a));
+  check('kunga qo\'yilgan matn kutubxona bo\'limida takrorlanmaydi', !/Kunga qo'yilmagan matn/.test(r.b) && /Rejalangan/.test(r.b));
+
   // 1–5-oktabrning hammasi band bo'lsa, zaxira 6-oktabrdan boshlanadi.
   const reserveWithPlan = await page.evaluate(() => {
     state.contentStartDate = '2026-10-01';
