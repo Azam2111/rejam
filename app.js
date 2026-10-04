@@ -2227,13 +2227,11 @@ function renderQuickAddModal(){
 function renderAddScriptModal(){
   return `<div class="rp-modal-overlay" data-action="close-add-script"><div class="rp-modal rp-modal-tall" data-action="noop">
     <div class="rp-modal-header"><span>Reels matni yozish</span><button class="rp-icon-btn" data-action="close-add-script">&#10005;</button></div>
-    <p class="rp-note">Tayyor Reels matnini yozing yoki shu yerga qo'ying. <b>Kunga qo'yish</b> — matn kutubxonaga tushadi va tanlangan kunda darhol ko'rinadi. <b>Faqat zaxiraga</b> — kunga qo'yilmaydi, keyin "Kunlarga bo'l" orqali taqsimlanadi.</p>
+    <p class="rp-note">Tayyor Reels matnini yozing yoki shu yerga qo'ying. Saqlaganingizda u o'zi birinchi bo'sh kunga reja qilinadi.</p>
     <textarea id="f-app-script" class="rp-idea-input rp-script-input" data-draft="appscript" rows="9" placeholder="Reels matni...">${esc(state.appScriptDraft)}</textarea>
-    <label class="rp-field"><span>Qaysi kunga</span>
-      <input id="f-app-script-date" type="date" value="${esc(appScriptDefaultDate())}" />
-    </label>
-    <button class="rp-save-btn" data-action="save-app-script-day">Kunga qo'yish</button>
-    <button class="rp-add-btn" data-action="save-app-script">Faqat zaxiraga</button>
+    <div class="rp-next-free">Keyingi bo'sh kun: <b>${esc(fmtUz(parseKey(appScriptDefaultDate())))}</b></div>
+    <button class="rp-save-btn" data-action="save-app-script-day">Saqlash va rejaga qo'yish</button>
+    <button class="rp-link-btn rp-link-quiet" data-action="save-app-script">Kunga qo'ymasdan, faqat zaxiraga</button>
   </div></div>`;
 }
 
@@ -4456,9 +4454,9 @@ const handlers = {
   'close-add-script': () => { state.showAddScript = false; state.appScriptDraft = ''; render(); },
   'save-app-script-day': () => {
     const el = document.getElementById('f-app-script');
-    const dEl = document.getElementById('f-app-script-date');
     state.appScriptDraft = (el && el.value) || state.appScriptDraft;
-    const p = addAppScriptToDay(state.appScriptDraft, dEl && dEl.value);
+    // Sana saqlash paytida hisoblanadi: oyna ochiq turganda boshqa qurilmadan kun band bo'lgan bo'lishi mumkin.
+    const p = addAppScriptToDay(state.appScriptDraft, appScriptDefaultDate());
     if (!p) return;
     state.showAddScript = false; state.appScriptDraft = ''; render();
     toast(fmtUz(parseKey(p.date)) + ' kuniga qo\'yildi');

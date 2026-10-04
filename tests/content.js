@@ -568,9 +568,22 @@ function serve(port){
   r = await page.evaluate(() => { state.posts = [{ id:'b1', title:'x', date:'2099-01-01', scriptId:null, matnAt:1, videoAt:null, montajAt:null }]; state.contentStartDate = '2099-01-01'; return appScriptDefaultDate(); });
   check('standart sana birinchi BO\'SH kun', r === '2099-01-02', r);
   r = await page.evaluate(() => { state.posts = []; state.contentStartDate = ''; state.showAddScript = true; render();
-    const has = !!document.querySelector('[data-action="save-app-script-day"]') && !!document.getElementById('f-app-script-date');
+    const has = !!document.querySelector('[data-action="save-app-script-day"]') && !document.getElementById('f-app-script-date') && /Keyingi bo'sh kun/.test(document.body.innerText);
     state.showAddScript = false; render(); return has; });
-  check('oynada sana va "Kunga qo\'yish" tugmasi bor', r === true);
+  check('oynada sana so\'ralmaydi, keyingi bo\'sh kun ko\'rsatiladi', r === true);
+  r = await page.evaluate(() => {
+    state.scripts = []; state.usedScripts = []; state.contentStartDate = '2099-03-01';
+    state.posts = [{ id:'b1', title:'x', date:'2099-03-01', scriptId:null, matnAt:1, videoAt:null, montajAt:null },
+                   { id:'b2', title:'y', date:'2099-03-02', scriptId:null, matnAt:1, videoAt:null, montajAt:null }];
+    state.showAddScript = true; state.appScriptDraft = 'Avtomatik joylanadigan matn'; render();
+    document.querySelector('[data-action="save-app-script-day"]').click();
+    const a = state.posts.find(p => p.title === 'Avtomatik joylanadigan matn');
+    state.showAddScript = true; state.appScriptDraft = 'Ikkinchi avtomatik matn'; render();
+    document.querySelector('[data-action="save-app-script-day"]').click();
+    const b = state.posts.find(p => p.title === 'Ikkinchi avtomatik matn');
+    return [a && a.date, b && b.date];
+  });
+  check('saqlanganda o\'zi birinchi bo\'sh kunga tushadi, keyingisi undan keyingi kunga', r[0] === '2099-03-03' && r[1] === '2099-03-04', JSON.stringify(r));
 
   r = await page.evaluate(() => {
     state.scripts = []; state.posts = []; state.usedScripts = [];
