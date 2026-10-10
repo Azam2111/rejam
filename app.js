@@ -1094,6 +1094,7 @@ window.rejamApplyCloud = function(patch){
   const env = currentEnvelope(true);
   writeQueue = writeQueue.then(() => persistEnvelope(env)).catch(() => {});
   cloudPrev = deepCopy(cloudView());
+  if (fillBatchTexts()) setTimeout(() => commit(), 0);
   render();
   if (state.sheetUrl && state.sheetUrl !== oldSheetUrl) {
     const c = window.rejamCloud;
@@ -1219,6 +1220,7 @@ async function bootstrapStorage(){
   ensureEditedAt(best ? best.env : null);
   if (usageMigrated) await commit();
   cloudPrev = deepCopy(cloudView());
+  if (fillBatchTexts()) await commit();
 
   state.booted = true;
   render();
@@ -2229,8 +2231,56 @@ function validateShootBatch(raw, seen, issues){
     scheduledPostIds: Array.isArray(raw.scheduledPostIds) ? raw.scheduledPostIds.map(String).filter(x => ID_RE.test(x)).slice(0, 20) : [],
     // Sessiya yakunlanganda suratga tushmay qolgan rejalangan kunlar
     pendingPostIds: Array.isArray(raw.pendingPostIds) ? raw.pendingPostIds.map(String).filter(x => ID_RE.test(x)).slice(0, 20) : [],
+    // To'liq matnlar faqat s'yomka davomida bulutga ketadi: matnlar kutubxonasi (state.scripts) bulutga
+    // yuborilmaydi, shuning uchun boshqa qurilmada (kompyuterda) to'liq matn va "Nusxa" shu orqali chiqadi.
+    texts: raw.status === 'scheduled' ? {} : cleanBatchTexts(raw.texts, scriptIds),
     createdAt: finiteNum(raw.createdAt) || Date.now(),
   };
+}
+function cleanBatchTexts(raw, ids){
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  const allowed = new Set(ids);
+  for (const id of Object.keys(raw)) {
+    if (!allowed.has(id) || typeof raw[id] !== 'string') continue;
+    const t = raw[id].slice(0, 8000);
+    if (t.trim()) out[id] = t;
+  }
+  return out;
+}
+function batchTextsFor(scriptIds){
+  const out = {};
+  for (const id of scriptIds || []) {
+    const sc = state.scripts.find(x => x.id === id);
+    if (sc && sc.text) out[id] = String(sc.text).slice(0, 8000);
+  }
+  return out;
+}
+// Matnlar bor qurilmada (telefonda) faol s'yomkalarga yetishmayotgan to'liq matnlarni qo'shadi.
+// O'zgarish bo'lsa true -- chaqiruvchi commit() qiladi va matn bulut orqali boshqa qurilmaga boradi.
+function fillBatchTexts(){
+  if (!state.scripts.length) return false;
+  let changed = false;
+  state.shootBatches = state.shootBatches.map(b => {
+    if (b.status !== 'shooting') return b;
+    const have = b.texts || {};
+    const add = {};
+    for (const id of b.scriptIds || []) {
+      if (have[id]) continue;
+      const sc = state.scripts.find(x => x.id === id);
+      if (sc && sc.text) add[id] = String(sc.text).slice(0, 8000);
+    }
+    if (!Object.keys(add).length) return b;
+    changed = true;
+    return Object.assign({}, b, { texts: Object.assign({}, have, add) });
+  });
+  return changed;
+}
+function batchScriptText(id){
+  for (const b of state.shootBatches) {
+    if (b.texts && b.texts[id]) return b.texts[id];
+  }
+  return '';
 }
 
 function renderQuickAddModal(){
@@ -2525,6 +2575,7 @@ function mergeSheetScripts(items){
   }
   const before = state.scripts.length;
   state.scripts = state.scripts.filter(sc => sc.source !== 'sheet' || fromSheet.has(scriptKey(sc.text))).concat(fresh);
+  fillBatchTexts();
   return { fresh, removed: before + fresh.length - state.scripts.length };
 }
 
@@ -2943,6 +2994,7 @@ function createShootBatch(draft){
     label: String(draft.label || '').trim() || 'S\'yomka sessiyasi',
     outfit, location,
     scriptIds: scripts.map(sc => sc.id), shotIds: [],
+    texts: batchTextsFor(scripts.map(sc => sc.id)),
     gapDays: Math.max(3, Math.min(30, Math.floor(Number(draft.gapDays) || 5))),
     startDate: isValidDateKey(draft.startDate) ? draft.startDate : splitStart(toKey(new Date())),
     status: 'shooting', scheduledPostIds: [], createdAt: now,
@@ -2961,6 +3013,7 @@ function createPlannedShootBatch(draft){
     label:String(draft.label || '').trim() || 'S\'yomka sessiyasi',
     outfit, location,
     postIds:posts.map(p => p.id), scriptIds:posts.map(p => p.scriptId), shotIds:[],
+    texts:batchTextsFor(posts.map(p => p.scriptId)),
     gapDays:5, startDate:posts[0].date, status:'shooting', scheduledPostIds:posts.map(p => p.id), createdAt:now,
   };
   state.shootBatches = state.shootBatches.concat([b]); commit(); return b;
@@ -3113,7 +3166,8 @@ function scheduleScriptToDate(id, date){
 }
 
 function copyScriptText(id){
-  const sc = state.scripts.find(x => x.id === id);
+  const found = state.scripts.find(x => x.id === id);
+  const sc = found || (batchScriptText(id) ? { id, text: batchScriptText(id) } : null);
   if (!sc) return;
   const done = () => toast('Matn nusxa olindi');
   // iOS Safari/PWA clipboard Promise'i ba'zan ruxsatni kech rad etadi. O'sha
@@ -3500,7 +3554,9 @@ function renderShootBatches(){
         <div class="rp-shoot-meta">${b.outfit ? 'Kiyim: ' + esc(b.outfit) : 'Kiyim ko\'rsatilmagan'}${b.location ? ' · Lokatsiya: ' + esc(b.location) : ''}<br>${items.length} ta matn · ${shot.size} ta olindi · ${planned ? 'chiqish sanalari saqlanadi' : b.gapDays + ' kun oralatib'}</div>
         <div class="rp-shoot-scripts">${items.map((item, i) => {
           const done = shot.has(item.id), sc = item.sc;
-          return `<div class="rp-shoot-script${done ? ' rp-shoot-script-done' : ''}"><span>${i + 1}</span>${item.post ? `<b class="rp-shoot-date">${esc(fmtUz(parseKey(item.post.date)))}</b>` : ''}<div>${esc(sc ? sc.text : item.post.title)}</div>${sc ? `<button class="rp-link-btn" data-action="copy-script" data-id="${esc(sc.id)}">Nusxa</button>` : ''}<button class="rp-link-btn" data-action="toggle-batch-shot" data-batch="${esc(b.id)}" data-id="${esc(item.id)}">${done ? '✓ Olindi' : 'Olindi deb belgilash'}</button></div>`;
+          const textId = sc ? sc.id : (item.post ? item.post.scriptId : item.id);
+          const fullText = sc ? sc.text : ((b.texts && textId && b.texts[textId]) || '');
+          return `<div class="rp-shoot-script${done ? ' rp-shoot-script-done' : ''}"><span>${i + 1}</span>${item.post ? `<b class="rp-shoot-date">${esc(fmtUz(parseKey(item.post.date)))}</b>` : ''}<div>${esc(fullText || item.post.title)}</div>${fullText ? `<button class="rp-link-btn" data-action="copy-script" data-id="${esc(textId)}">Nusxa</button>` : `<small class="rp-note">To'liq matn telefonda — ilovani telefonda bir marta oching</small>`}<button class="rp-link-btn" data-action="toggle-batch-shot" data-batch="${esc(b.id)}" data-id="${esc(item.id)}">${done ? '✓ Olindi' : 'Olindi deb belgilash'}</button></div>`;
         }).join('')}</div>
         ${planned && shot.size && shot.size < items.length ? `<div class="rp-import-msg">Qolgan ${items.length - shot.size} ta matn keyingi s'yomka tanloviga qaytadi.</div>` : ''}
         <div class="rp-shoot-actions"><button class="rp-save-btn" data-action="finalize-batch" data-id="${esc(b.id)}"${shot.size ? '' : ' disabled'}>${shot.size ? (planned ? shot.size + ' ta olinganni tasdiqlash' : shot.size + ' tasini sochib joylash') : 'Avval olinganlarini belgilang'}</button><button class="rp-link-btn" data-action="cancel-batch" data-id="${esc(b.id)}">Bekor qilish</button></div>
