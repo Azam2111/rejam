@@ -865,6 +865,37 @@ function serve(port){
   check('eksport: ko\'rsatma belgisini o\'chirib bo\'ladi', await page.evaluate(() => state.exportPrompt) === false);
   await page.evaluate(() => { state.showExport = false; render(); });
 
+  group('SYOMKA: TO\'LIQ MATN VA NUSXA BOSHQA QURILMADA');
+  const stx = await page.evaluate(() => {
+    state.posts = []; state.shootBatches = []; state.usedScripts = [];
+    const long = 'O\'z maslakingizda mustahkam turing. Yo\'lingiz davomida sizni o\'zgartirmoqchi bo\'lganlar ko\'p bo\'ladi, lekin siz o\'z yo\'lingizda qolasiz.';
+    state.scripts = [{ id:'sct-1', text:long, tag:'', source:'app', createdAt:1 }];
+    state.posts = [{ id:'sct-post', title:long.slice(0,70), date:'2026-10-05', scriptId:'sct-1', note:'', createdAt:1, editedAt:1, matnAt:1, videoAt:null, montajAt:null }];
+    const b = createPlannedShootBatch({ count:1, outfit:'', location:'Uy' });
+    const savedText = b && b.texts && b.texts['sct-1'];
+    // Kompyuter: matnlar kutubxonasi yo'q, faqat bulutdan kelgan sessiya
+    const keep = state.scripts; state.scripts = [];
+    const v = validateShootBatch(JSON.parse(JSON.stringify(state.shootBatches[0])), new Set(), []);
+    state.tab = 'kontent'; render();
+    const html = document.body.innerHTML;
+    const hasBtn = !!document.querySelector('.rp-shoot-script [data-action="copy-script"]');
+    const fullShown = document.body.innerText.includes('siz o\'z yo\'lingizda qolasiz');
+    const copyFrom = batchScriptText('sct-1');
+    // Eski sessiya (matnsiz) -> matnlar bor qurilma to'ldiradi
+    state.scripts = keep;
+    state.shootBatches = state.shootBatches.map(x => Object.assign({}, x, { texts:{} }));
+    const filled = fillBatchTexts();
+    const fin = finalizeShootBatch ? (toggleBatchShot(state.shootBatches[0].id, 'sct-post'), finalizeShootBatch(state.shootBatches[0].id)) : 0;
+    const after = validateShootBatch(JSON.parse(JSON.stringify(state.shootBatches[0])), new Set(), []);
+    return { savedText: savedText === long, validKeeps: v && v.texts['sct-1'] === long, hasBtn, fullShown, copyFrom: copyFrom === long,
+             filled, filledText: state.shootBatches[0].texts ? Object.keys(state.shootBatches[0].texts).length : -1, afterStrip: after ? Object.keys(after.texts).length : -1 };
+  });
+  check('sessiya yaratilganda to\'liq matn saqlanadi', stx.savedText, JSON.stringify(stx));
+  check('bulut tekshiruvi matnni saqlaydi', stx.validKeeps, JSON.stringify(stx));
+  check('matnsiz qurilmada Nusxa tugmasi va to\'liq matn chiqadi', stx.hasBtn && stx.fullShown && stx.copyFrom, JSON.stringify(stx));
+  check('eski sessiyaga matnlar bor qurilmada to\'ldiriladi', stx.filled === true, JSON.stringify(stx));
+  check('sessiya yakunlangach matnlar bulutdan tozalanadi', stx.afterStrip === 0, JSON.stringify(stx));
+
   check('konsolda xato yo\'q', errors.length === 0, errors.join(' | '));
 
   console.log(out.join('\n'));
